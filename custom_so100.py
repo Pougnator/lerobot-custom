@@ -1,11 +1,17 @@
+from pickle import load
 import time
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.cameras.utils import make_cameras_from_configs
 
 
-DEBUG = True 
+DEBUG = False 
 MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
+
+elbow_angle_calib_offset = 6.5
+wrist_angle_calib_offset = 5.0
+shoulder_lift_calib_offset = 1.5
+shoulder_pan_calib_offset = -1.3
 
 class CustomSO100(SOFollower):
     """Custom SO100 with only 4 motors (missing wrist_roll and gripper)."""
@@ -73,7 +79,33 @@ class CustomSO100(SOFollower):
             self.bus.write("Maximum_Velocity_Limit", motor, max_velocity)
         print(f"[DEBUG] Set maximum velocity to {max_velocity} for all motors")
 
+    def velocities_are_zero(self, velocities) -> bool:
+        """Checks if all motor velocities are effectively zero.
 
+        Args:
+            velocities: Dictionary mapping motor names to their current velocities.
+
+        Returns:
+            True if all velocities are effectively zero.
+        """
+        for motor_name,   velocity in velocities.items():
+            if abs(velocity) > 1e-2:  # Consider a small threshold for zero
+                return False
+        return True
+        
+    def get_motors_velocities(self) -> dict[str, float]:
+        """Check current motor velocities.
+        
+        
+        Returns:
+            Dictionary mapping motor names to their current load velocities in revolutions per minute (RRM).
+        """
+        velocities = {}
+        for motor_name in self.bus.motors.keys():
+            velocity = abs(self.bus.read("Present_Velocity", motor_name))
+            velocities[motor_name] = velocity * 0.0732  # Convert to RRM (Rev/min)
+        return velocities
+        
     def get_motor_torques(self) -> dict[str, float]:
         """Get current torque/load for all motors.
         
@@ -118,7 +150,14 @@ class CustomSO100(SOFollower):
                 print(f"[WARNING] Torque limit exceeded on {motor_name}: {load} (threshold: {threshold})")
                 self.emergency_stop(f"Torque limit exceeded on {motor_name}")
               
-       
+    def print_motor_velocities(self, velocities) -> None:
+        """Print current motor velocities."""
+        
+        print("\n=== MOTOR VELOCITIES ===")
+        for motor_name, velocity in velocities.items():
+            direction = "CW" if velocity > 0 else "CCW" if velocity < 0 else "NONE"
+            print(f"{motor_name}: {velocity:6.1f} ({direction})")  
+
     def print_motor_torques(self, torques) -> None:
         """Print current torque/load for all motors."""
         
@@ -129,7 +168,16 @@ class CustomSO100(SOFollower):
 
     def act_and_observe(self, action: dict) -> dict:
         """Send action and get observation in one step."""
-    
+
+        # Correct the angles because two of them are off
+        if "elbow_flex.pos" in action:
+            action["elbow_flex.pos"] += elbow_angle_calib_offset
+        if "wrist_flex.pos" in action:
+            action["wrist_flex.pos"] += wrist_angle_calib_offset
+        if "shoulder_lift.pos" in action:
+            action["shoulder_lift.pos"] += shoulder_lift_calib_offset  
+        if "shoulder_pan.pos" in action:
+            action["shoulder_pan.pos"] += shoulder_pan_calib_offset
         # Check if emergency stop was triggered
         if self.external_stop_check and self.external_stop_check() == True:
             print("[WARNING] Emergency stop active - action ignored")
@@ -140,13 +188,16 @@ class CustomSO100(SOFollower):
         self.send_action(action)
         # Monitor torque during movement
         start_time = time.time()
-        while time.time() - start_time < 3.0:  # Monitor for 3 seconds
+        while time.time() - start_time < 0.2 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
             torques = self.get_motor_torques()
+            velocities = self.get_motors_velocities()
             self.check_torque_limits(torques, threshold=MAX_TORQUE_THRESHOLD)
             if self.external_stop_check and self.external_stop_check() == True:
                 self.emergency_stop("Spacebar pressed")
                 break
-            self.print_motor_torques(torques)
+            if DEBUG:
+                self.print_motor_velocities(velocities)
+                self.print_motor_torques(torques)
             time.sleep(0.1)  # Sample every 100ms
          
         
@@ -158,7 +209,15 @@ class CustomSO100(SOFollower):
                 print(f"-{key} ---> {value:.2f} degrees")
             print("-"*50)
 
-        
+        #correct the observed angles because elbow and wrist are off by 4 degrees
+        if "elbow_flex.pos" in obs:
+            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
+        if "wrist_flex.pos" in obs:
+            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
+        if "shoulder_lift.pos" in obs:
+            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
+        if "shoulder_pan.pos" in obs:
+            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
         return obs
         
     # def configure(self) -> None:

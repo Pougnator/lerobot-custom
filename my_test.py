@@ -3,10 +3,31 @@ from lerobot.robots.so_follower import SOFollowerRobotConfig
 import time
 import threading
 from pynput import keyboard
-DEBUG = True
+from ninja_kinematics import SimpleIK
+import numpy as np
+from mykinematics import forward_kinematics
+from mykinematics import inverse_kinematics as my_inverse_kinematics
+
+
+
+DEBUG = False
 
 # Global flag for emergency stop
 emergency_stop_requested = False
+
+
+def build_action(angles):
+    """Build action dictiionnary from numpy array."""
+    
+    action = {
+        "shoulder_pan.pos": angles[0],
+        "shoulder_lift.pos": angles[1],
+        "elbow_flex.pos": angles[2],
+        "wrist_flex.pos": angles[3],
+    }
+    return action
+
+
 
 def on_press(key):
     global emergency_stop_requested
@@ -68,52 +89,64 @@ try:
     robot.bus.enable_torque()
     print("Torque enabled")
 
-    # Move first motor 10 degrees
-    action = {
-        "shoulder_pan.pos": -5.0,
-        "shoulder_lift.pos": -5.0,
-        "elbow_flex.pos": -5.0,
-        "wrist_flex.pos": -5.0,
-    }
+    # Move first motor 0 degrees
+    action = build_action([0.0, 0.0, 0.0, 0.0])
  
     robot.act_and_observe(action)
     
     if emergency_stop_requested:
         raise KeyboardInterrupt("Emergency stop detected")
     
-    action = {
-        "shoulder_pan.pos": 0.0,
-        "shoulder_lift.pos": 0.0,
-        "elbow_flex.pos": 0.0,
-        "wrist_flex.pos": 45.0,
-    }
-    robot.act_and_observe(action)
+    action = build_action([0.0, 0.0, 0.0, 45.0])
+    input("Press ENTER to continue to IK test...")
+    obs = robot.act_and_observe(action)
+    print(f"Observed position: shoulder_pan = {obs['shoulder_pan.pos']:.2f}°, shoulder_lift = {obs['shoulder_lift.pos']:.2f}°,elbow_flex = {obs['elbow_flex.pos']:.2f}°, Wrist flex = {obs['wrist_flex.pos']:.2f}°")
+    
+    
+    myxyz= forward_kinematics(np.array([obs["shoulder_lift.pos"], obs["elbow_flex.pos"], obs["wrist_flex.pos"]]))
+    print(f"Knife tip position according to mykinematics: X={myxyz[0]:.3f} mm, Y={myxyz[1]:.3f} mm, Z={myxyz[2]:.3f} mm")
 
-    action = {
-        "shoulder_pan.pos": 0.0,
-        "shoulder_lift.pos": 10.0,
-        "elbow_flex.pos": 10.0,
-        "wrist_flex.pos": 0.0,
-    }
-    robot.act_and_observe(action)
+  
+    # robot.set_max_velocity(20)
+    # robot.set_acceleration(10)
 
-    action = {
-        "shoulder_pan.pos": 0.0,
-        "shoulder_lift.pos": 40.0,
-        "elbow_flex.pos": 30.0,
-        "wrist_flex.pos": -10.0,
-    }
-    robot.act_and_observe(action)
-    robot.set_max_velocity(20)
-    robot.set_acceleration(10)
+    # target_xyz = np.array([0.3, 0.0, 0.02])  # Set target to 20cm depth and 10cm height
+   
+    # current_joint_angles  = np.array([
+    #     obs["shoulder_pan.pos"],
+    #     obs["shoulder_lift.pos"],
+    #     obs["elbow_flex.pos"],
+    #     obs["wrist_flex.pos"],
+    # ])
+    # print(f"Current joints: {current_joint_angles}")
+    # # target_joints = ik_solver.inverse_kinematics(target_xyz, current_joints= current_joint_angles, calibration=robot.bus.calibration )
+    # # for joint in target_joints:
+    # #     print(f"  Target joint angle: {joint:.2f}°")
+    # my_target_joints = np.zeros(4)
+    # my_target_joints[0] = 0  # shoulder_pan
+    # ik_result = my_inverse_kinematics(target_xyz * 1000)  # Returns [shoulder_lift, elbow_flex, wrist_flex]
+    # my_target_joints[1] = ik_result[0]  # shoulder_lift
+    # my_target_joints[2] = ik_result[1]  # elbow_flex
+    # my_target_joints[3] = ik_result[2]  # wrist_flex
 
-    # action = {
-    #     "shoulder_pan.pos": 0.0,
-    #     "shoulder_lift.pos": 40.0,
-    #     "elbow_flex.pos": 30.0,
-    #     "wrist_flex.pos": 45.0,
-    # }
-    # robot.act_and_observe(action) 
+    
+    
+    
+
+    # print(f"my_target_joints: Shoulder pan = {my_target_joints[0]:.2f}°, Shoulder lift = {my_target_joints[1]:.2f}°, Elbow={my_target_joints[2]:.2f}°, Wrist={my_target_joints[3]:.2f}°")
+    # input("Press ENTER to move to my IK target...")
+    # action = build_action(my_target_joints)
+   
+    # obs = robot.act_and_observe(action) 
+    # obs = robot.act_and_observe(action) 
+    # print(f"Observed position: Shoulder pan = {obs['shoulder_pan.pos']:.2f}°, Shoulder lift = {obs['shoulder_lift.pos']:.2f}°, Elbow={obs['elbow_flex.pos']:.2f}°, Wrist={obs['wrist_flex.pos']:.2f}°")
+    
+    # observed_angles = np.array([obs["shoulder_pan.pos"], obs["shoulder_lift.pos"], obs["elbow_flex.pos"], obs["wrist_flex.pos"]])
+
+
+    # xyz_position_mykin = forward_kinematics(np.array([observed_angles[1], observed_angles[2], observed_angles[3]]))
+    # print(f"Knife tip position according to mykinematics: X={xyz_position_mykin[0]:.3f} mm, Y={xyz_position_mykin[1]:.3f} mm, Z={xyz_position_mykin[2]:.3f} mm")
+
         
 except KeyboardInterrupt:
     print("\n[INTERRUPT] Emergency stop triggered!")
