@@ -1,16 +1,17 @@
-from pickle import load
+
 import time
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.cameras.utils import make_cameras_from_configs
-
+from mykinematics import forward_kinematics, inverse_kinematics
+import numpy as np
 
 DEBUG = False 
 MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
 
-elbow_angle_calib_offset = 6.5
+elbow_angle_calib_offset = 8
 wrist_angle_calib_offset = 5.0
-shoulder_lift_calib_offset = 1.5
+shoulder_lift_calib_offset = 0.5
 shoulder_pan_calib_offset = -1.3
 
 class CustomSO100(SOFollower):
@@ -18,6 +19,31 @@ class CustomSO100(SOFollower):
     
     # Set this to True to force recalibration
     FORCE_CALIBRATION = False
+
+    @staticmethod
+    def build_action(angles):
+        """Build action dictiionnary from numpy array.
+        Args:
+            angles: Numpy array of (true) joint angles in degrees [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex]
+        Returns:
+            action: Dictionary mapping motor names to target positions in degrees.
+             
+             action = {
+            "shoulder_pan.pos": angles[0],
+            "shoulder_lift.pos": angles[1],
+            "elbow_flex.pos": angles[2],
+            "wrist_flex.pos": angles[3],
+        }
+        """
+        
+        action = {
+            "shoulder_pan.pos": angles[0],
+            "shoulder_lift.pos": angles[1],
+            "elbow_flex.pos": angles[2],
+            "wrist_flex.pos": angles[3],
+        }
+        return action
+    
     
     def __init__(self, config: SOFollowerRobotConfig):
         # Call parent __init__ but skip motor bus setup
@@ -166,6 +192,37 @@ class CustomSO100(SOFollower):
             direction = "CW" if load > 0 else "CCW" if load < 0 else "NONE"
             print(f"{motor_name}: {load:6.1f} ({direction})")
 
+ 
+    def go_to_xz(self, x, z, previous_observation=None, estimate_xyz = False):
+        ''' Move robot to specified X,Z position using IK. Y is assumed to be 0 (2D plane).
+        x,y are in cm
+
+
+        previous_observation: Previous observation dict to get current joint angles.
+        Returns:
+            obs: New observation after movement
+            target_joints: Target joint angles used for movement
+            estimated_xyz: Forward kinematics estimate of knife tipafter movement based on observed joint angles
+        '''
+        target_xyz = np.array([x, 0.0, z])  # Y=0 for 2D plane
+        target_xyz = target_xyz * 10 # convert to mm
+        current_joints = previous_observation['shoulder_pan.pos'], previous_observation['shoulder_lift.pos'], previous_observation['elbow_flex.pos'], previous_observation['wrist_flex.pos']
+        ik_result = inverse_kinematics(target_xyz, current_joints=current_joints)
+        if DEBUG:
+            print(f"[DEBUG] IK result for target X={x:.3f} m, Z={z:.3f} m: {ik_result}")
+            print(f"[DEBUG] Current joints: {current_joints}")
+        # Build 4-DOF action (add shoulder_pan = 0)
+        if ik_result is None:
+            print("[ERROR] IK solution not found for the target position.")
+            return None, None, None
+        target_joints = np.array([0.0, ik_result[0], ik_result[1], ik_result[2]])
+        action = self.build_action(target_joints)
+        obs = self.act_and_observe(action)
+        estimated_xyz = None
+        if estimate_xyz:
+            estimated_xyz = forward_kinematics(np.array([obs["shoulder_lift.pos"], obs["elbow_flex.pos"], obs["wrist_flex.pos"]]))
+        return obs, target_joints, estimated_xyz
+
     def act_and_observe(self, action: dict) -> dict:
         """Send action and get observation in one step."""
 
@@ -188,7 +245,7 @@ class CustomSO100(SOFollower):
         self.send_action(action)
         # Monitor torque during movement
         start_time = time.time()
-        while time.time() - start_time < 0.2 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
+        while time.time() - start_time < 0.1 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
             torques = self.get_motor_torques()
             velocities = self.get_motors_velocities()
             self.check_torque_limits(torques, threshold=MAX_TORQUE_THRESHOLD)
@@ -201,10 +258,64 @@ class CustomSO100(SOFollower):
             time.sleep(0.1)  # Sample every 100ms
          
         
-        time.sleep(1)
+        time.sleep(3)
         obs = self.get_observation()
         if DEBUG == True:
-            print(f"[DEBUG] received observation:")
+            print(f"[DEBUG][CustomSO100] received observation:")
+            for key, value in obs.items():
+                print(f"-{key} ---> {value:.2f} degrees")
+            print("-"*50)
+
+        #correct the observed angles because elbow and wrist are off by 4 degrees
+        if "elbow_flex.pos" in obs:
+            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
+        if "wrist_flex.pos" in obs:
+            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
+        if "shoulder_lift.pos" in obs:
+            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
+        if "shoulder_pan.pos" in obs:
+            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
+        return obs
+    
+    def act_and_observe_precise(self, action: dict) -> dict:
+        """Send action and get observation in one step."""
+
+        # Correct the angles because two of them are off
+        if "elbow_flex.pos" in action:
+            action["elbow_flex.pos"] += elbow_angle_calib_offset
+        if "wrist_flex.pos" in action:
+            action["wrist_flex.pos"] += wrist_angle_calib_offset
+        if "shoulder_lift.pos" in action:
+            action["shoulder_lift.pos"] += shoulder_lift_calib_offset  
+        if "shoulder_pan.pos" in action:
+            action["shoulder_pan.pos"] += shoulder_pan_calib_offset
+        # Check if emergency stop was triggered
+        if self.external_stop_check and self.external_stop_check() == True:
+            print("[WARNING] Emergency stop active - action ignored")
+            return self.get_observation()
+        
+        if DEBUG == True:
+            print(f"[DEBUG] sending action: {action} to robot")
+        self.send_action(action)
+        # Monitor torque during movement
+        start_time = time.time()
+        while time.time() - start_time < 0.1 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
+            torques = self.get_motor_torques()
+            velocities = self.get_motors_velocities()
+            self.check_torque_limits(torques, threshold=MAX_TORQUE_THRESHOLD)
+            if self.external_stop_check and self.external_stop_check() == True:
+                self.emergency_stop("Spacebar pressed")
+                break
+            if DEBUG:
+                self.print_motor_velocities(velocities)
+                self.print_motor_torques(torques)
+            time.sleep(0.1)  # Sample every 100ms
+         
+        
+        time.sleep(3)
+        obs = self.get_observation()
+        if DEBUG == True:
+            print(f"[DEBUG][CustomSO100] received observation:")
             for key, value in obs.items():
                 print(f"-{key} ---> {value:.2f} degrees")
             print("-"*50)

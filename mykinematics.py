@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import fsolve
 from scipy.optimize import minimize
 
-DEBUG = True
+DEBUG = False
 robot_links = {
     "shoulder_upperarm": 79.21,
     "upperarm_forearm": 119,
@@ -12,6 +12,7 @@ robot_links = {
 }
 
 elbow_wrist_angle = 1.77 # degrees
+# elbow_wrist_angle = 0 # degrees
 upper_arm_elbow_angle = 13.81  # degrees
 shoulder_coordinates = np.array([61, 0.0, 47.0])  # Shoulder base at origin
 upper_arm_coordinates = shoulder_coordinates + np.array([32, 0.0, 73.0])
@@ -78,7 +79,7 @@ def trigo_to_joint_angles(trigo_angles):
     return np.array(joint_angles)
 
 
-def inverse_kinematics(xyz_target):
+def inverse_kinematics(xyz_target, current_joints=None, calibration=None):
 
     """Compute joint angles (degrees) from target end-effector position (mm) in 2 dimensions.
     We constrain the knife to be parallel to the horisontal plane 
@@ -116,7 +117,7 @@ def inverse_kinematics(xyz_target):
         x1 = L1 * np.cos(theta1-np.deg2rad(upper_arm_elbow_angle)) + x0
         z1 = L1 * np.sin(theta1-np.deg2rad(upper_arm_elbow_angle)) + z0
         
-        x2 = L2 * np.cos(theta1 + theta2+ np.deg2rad(elbow_wrist_angle)) + x1
+        x2 = L2 * np.cos(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + x1
         z2 = L2 * np.sin(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + z1
         
         x3 = L3 * np.cos(theta1 + theta2 + theta3) + x2
@@ -131,6 +132,11 @@ def inverse_kinematics(xyz_target):
      # Initial guess (straight down configuration)
     theta1_init = np.pi/4  # Start at 45° (middle of 0 to 90°)
     theta2_init = -np.pi/2  # Start at -90° (middle of -180° to 0°)
+    if current_joints is not None:
+        trigo_current = joint_angles_to_trigo(np.array(current_joints[1:4]))
+        theta1_init = np.deg2rad(trigo_current[0])
+        theta2_init = np.deg2rad(trigo_current[1])
+
     initial_guess = [theta1_init, theta2_init]
     
      # Bounds: theta2 must be < -π/2
@@ -155,6 +161,10 @@ def inverse_kinematics(xyz_target):
     trigo_angles = np.array([theta1_deg, theta2_deg, theta3_deg])
     joint_angles = trigo_to_joint_angles(trigo_angles)
 
+    if np.sqrt(result.fun) > 1.0:  # More than 1 mm error
+        print(f"[WARNING] IK solution has high error: {np.sqrt(result.fun):.3f} mm")
+        return None
+
     if DEBUG:
         print(f"[DEBUG] IK Solution: θ1={theta1_deg:.2f}°, θ2={theta2_deg:.2f}°, θ3={theta3_deg:.2f}°")
         print(f"  RMS error: {np.sqrt(result.fun):.3f} mm")
@@ -164,8 +174,11 @@ def inverse_kinematics(xyz_target):
 
    
 
-xyz = forward_kinematics([0,0, 45])
+xyz = forward_kinematics([0, 0, 45.77])
+xyz = [0.36, 0.0, 0.03]  # Target position in mm
+xyz = np.array(xyz) * 1000  # Convert to mm
 print(f"End-effector position from FK: X={xyz[0]:.3f} mm, Y={xyz[1]:.3f} mm, Z={xyz[2]:.3f} mm")
 joint_angles = inverse_kinematics(xyz)
-print(f"Joint angles from IK: Shoulder={joint_angles[0]:.2f}°, Elbow={joint_angles[1]:.2f}°, Wrist={joint_angles[2]:.2f}°")
+if joint_angles is not None:
+    print(f"Joint angles from IK: Shoulder={joint_angles[0]:.2f}°, Elbow={joint_angles[1]:.2f}°, Wrist={joint_angles[2]:.2f}°")
 

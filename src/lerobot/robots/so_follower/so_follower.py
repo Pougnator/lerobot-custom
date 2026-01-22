@@ -31,6 +31,7 @@ from lerobot.utils.decorators import check_if_already_connected, check_if_not_co
 from ..robot import Robot
 from ..utils import ensure_safe_goal_position
 from .config_so_follower import SOFollowerRobotConfig
+from lerobot.robots import robot
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,30 @@ class SOFollower(Robot):
             goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in goal_pos.items()}
             goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
+        # Send goal position to the arm
+        self.bus.sync_write("Goal_Position", goal_pos)
+        return {f"{motor}.pos": val for motor, val in goal_pos.items()}
+    
+
+    @check_if_not_connected
+    def move_motors_some_steps(self, steps) -> bool:
+        """Move a motor by relative number of encoder steps.
+
+        steps: Number of steps to move (positive or negative)
+
+
+        """
+
+        goal_pos = {}
+        for motor_name, step in steps.items():
+            if motor_name.removesuffix(".pos") not in self.bus.motors:
+                raise ValueError(f"Motor '{motor_name}' not found in the bus!")
+            current_pos = self.bus.read(motor_name, "Present_Position")
+            # Calculate new target
+            target_pos = current_pos + step
+            goal_pos[motor_name.removesuffix(".pos")] = target_pos
+        
+        
         # Send goal position to the arm
         self.bus.sync_write("Goal_Position", goal_pos)
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
