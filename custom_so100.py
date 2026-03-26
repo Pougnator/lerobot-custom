@@ -152,6 +152,41 @@ class CustomSO100(SOFollower):
         self.bus.enable_torque()
         print("[RESET] Emergency stop cleared, torque re-enabled")
 
+    def send_action_calibrated(self, action: dict) -> None:
+        """Apply calibration offsets and fire the action without waiting for completion.
+
+        Unlike act_and_observe, this method does NOT wait for motors to settle or
+        add any sleep delay.  Used by high-frequency trajectory loops (e.g. cutting
+        motion) where the caller manages timing and torque checks directly.
+        """
+        a = dict(action)   # don't mutate the caller's dict
+        if "elbow_flex.pos" in a:
+            a["elbow_flex.pos"] += elbow_angle_calib_offset
+        if "wrist_flex.pos" in a:
+            a["wrist_flex.pos"] += wrist_angle_calib_offset
+        if "shoulder_lift.pos" in a:
+            a["shoulder_lift.pos"] += shoulder_lift_calib_offset
+        if "shoulder_pan.pos" in a:
+            a["shoulder_pan.pos"] += shoulder_pan_calib_offset
+        self.send_action(a)
+
+    def get_observation_calibrated(self) -> dict:
+        """Get observation with calibration offsets removed (IK-convention angles).
+
+        Counterpart of send_action_calibrated — returns angles in the same
+        convention as go_to_xz / act_and_observe.
+        """
+        obs = self.get_observation()
+        if "elbow_flex.pos" in obs:
+            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
+        if "wrist_flex.pos" in obs:
+            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
+        if "shoulder_lift.pos" in obs:
+            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
+        if "shoulder_pan.pos" in obs:
+            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
+        return obs
+
     def emergency_stop(self, reason: str = "Torque limit exceeded"):
         """Execute emergency stop - disable all motor torque."""
         print(f"\n{'='*60}")
