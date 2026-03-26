@@ -520,15 +520,29 @@ def compute_cutting_trajectory_jacobian(
     return waypoints
 
 
-def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm):
+def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
+                          knife_tilt_deg=0.0):
     """Compute the next joint-angle command for one closed-loop cutting step.
 
     Reads the *actual* current joint angles (from robot observation), computes
     the position error to the desired tip location, then applies one analytical
     Jacobian-inverse step to produce the commanded joint angles.
 
-    The knife-horizontal constraint (t1 + t2 + t3 + π/4 = 0) is enforced
-    exactly by setting t3_new = -π/4 - t1_new - t2_new after the update.
+    The knife tilt is held constant at knife_tilt_deg via the constraint:
+        t1 + t2 + t3 + π/4 = β    (β = knife_tilt_deg in radians)
+    β = 0   → horizontal knife
+    β < 0   → tip pointing down  (e.g. −10° for a slight downward tilt)
+    β > 0   → tip pointing up
+
+    The wrist→tip fixed offset under this constraint:
+        knife-base direction = β − π/4
+        knife-tip  direction = β
+        dx_fixed = L3·cos(β−π/4) + L4·cos(β)
+        dz_fixed = L3·sin(β−π/4) + L4·sin(β)
+
+    The Jacobian matrix is independent of β (the fixed offset cancels in
+    differentiation), so only the constraint enforcement and the fixed offset
+    change with knife_tilt_deg.
 
     Convention note — mykinematics uses:
         x = L * cos(θ),   z = L * sin(θ)
@@ -541,11 +555,11 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm):
              [  L1·cos(t1-d1) + L2·cos(t1+t2+d2),   L2·cos(t1+t2+d2) ]]
         D = det(J) = L1·L2·sin(t2 + d1 + d2)
 
-    Analytical inverse (no iteration needed for small dt_s steps):
+    Analytical inverse (one shot, no iteration):
         dt1 = (1/D) · [ L2·cos(t1+t2+d2)·dx  +  L2·sin(t1+t2+d2)·dz ]
         dt2 = −(1/D) · [ (L1·cos(t1-d1)+L2·cos(t1+t2+d2))·dx
                         +(L1·sin(t1-d1)+L2·sin(t1+t2+d2))·dz ]
-        dt3 = −dt1 − dt2          (derived from constraint differential)
+        dt3 = −dt1 − dt2
 
     Parameters
     ----------
@@ -553,6 +567,8 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm):
         Actual observed joint angles in robot-frame degrees at this timestep.
     x_des_mm, z_des_mm : float
         Desired knife-tip position in robot world frame (mm).
+    knife_tilt_deg : float
+        Desired knife tilt in degrees. 0 = horizontal, negative = tip down.
 
     Returns
     -------
@@ -568,11 +584,11 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm):
     d1 = np.deg2rad(upper_arm_elbow_angle)  # 13.81° — upper-arm/elbow joint offset
     d2 = np.deg2rad(elbow_wrist_angle)      #  1.77° — elbow/wrist joint offset
 
-    # Under horizontal constraint (t1+t2+t3 = -π/4) the wrist→tip chain is a
-    # fixed vector: L3 points at -45°, L4 points at 0° (horizontal).
-    sqrt2_inv = 1.0 / np.sqrt(2.0)
-    dx_fixed = L3 * sqrt2_inv + L4   # fixed X offset, wrist → tip
-    dz_fixed = -L3 * sqrt2_inv       # fixed Z offset, wrist → tip
+    # Under the tilt constraint (t1+t2+t3+π/4 = β) the wrist→tip chain is a
+    # fixed vector determined by β = knife_tilt_deg.
+    beta = np.deg2rad(knife_tilt_deg)
+    dx_fixed = L3 * np.cos(beta - np.pi / 4) + L4 * np.cos(beta)
+    dz_fixed = L3 * np.sin(beta - np.pi / 4) + L4 * np.sin(beta)
 
     # ── Convert observed robot-frame angles → trigo-frame radians ─────────────
     trigo = joint_angles_to_trigo(np.array(current_joint_angles))
@@ -609,7 +625,7 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm):
     # ── Apply delta and enforce horizontal constraint ─────────────────────────
     t1_new = t1 + dt1
     t2_new = t2 + dt2
-    t3_new = -np.pi / 4 - t1_new - t2_new   # constraint: t1+t2+t3 = -π/4
+    t3_new = beta - np.pi / 4 - t1_new - t2_new   # constraint: t1+t2+t3 = β−π/4
 
     # ── Joint bounds ──────────────────────────────────────────────────────────
     if not (TRIGO_T1_MIN <= t1_new <= TRIGO_T1_MAX):
