@@ -141,10 +141,18 @@ class CustomSO100(SOFollower):
         """
         torques = {}
         for motor_name in self.bus.motors.keys():
-            load = self.bus.read("Present_Load", motor_name)
+            raw = self.bus.read("Present_Load", motor_name)
+            # Present_Load uses sign-magnitude encoding: bit 10 is the direction
+            # bit, bits 0-9 are the magnitude. Positive = CW, negative = CCW.
+            magnitude = raw & 0x3FF
+            load = -magnitude if (raw & 0x400) else magnitude
             torques[motor_name] = load
         return torques
-    
+
+    def set_wrist_torque_limit(self, limit: int) -> None:
+        """Set Torque_Limit on wrist_flex only. Range 0–1000 (1000 = full torque)."""
+        self.bus.write("Torque_Limit", "wrist_flex", limit)
+
     def reset_emergency_stop(self):
         """Reset emergency stop flag and re-enable torque."""
         print("[RESET] Clearing emergency stop and re-enabling torque...")

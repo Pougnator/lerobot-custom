@@ -45,12 +45,12 @@ Z_FK_BIAS_MM = 2.7   # mm — physical calibration correction, 2026-03-02
 # ─── Joint angle bounds (trigo frame, radians) ────────────────────────────────
 # Used by both the IK optimiser (as scipy bounds) and the Jacobian controller
 # (as explicit guard checks).  Single source of truth — edit here only.
-TRIGO_T1_MIN = 0.0                   # shoulder: 0°   → lift =  90° (arm vertical)
-TRIGO_T1_MAX = np.deg2rad(130)       # shoulder: 130° → lift ≈ −40° (leaning forward)
-TRIGO_T2_MIN = -np.pi                # elbow: −180°
-TRIGO_T2_MAX = 0.0                   # elbow:    0°   (fully folded)
-TRIGO_T3_MIN = -3 * np.pi / 4       # wrist: −135°
-TRIGO_T3_MAX = np.pi / 4            # wrist:  +45°
+TRIGO_A1_MIN = 0.0                   # shoulder: 0°   → lift =  90° (arm vertical)
+TRIGO_A1_MAX = np.deg2rad(130)       # shoulder: 130° → lift ≈ −40° (leaning forward)
+TRIGO_A2_MIN = -np.pi                # elbow: −180°
+TRIGO_A2_MAX = 0.0                   # elbow:    0°   (fully folded)
+TRIGO_A3_MIN = -3 * np.pi / 4       # wrist: −135°
+TRIGO_A3_MAX = np.pi / 4            # wrist:  +45°
 
 def forward_kinematics(joint_angles):
     """Compute end-effector position from joint angles (degrees) in world coordinates. The origin of the world coordinate system is at the shoulder base."""
@@ -224,9 +224,9 @@ def inverse_kinematics(xyz_target, current_joints=None, calibration=None):
         theta3_init = np.deg2rad(trigo_current[2])
 
     bounds = [
-        (TRIGO_T1_MIN, TRIGO_T1_MAX),
-        (TRIGO_T2_MIN, TRIGO_T2_MAX),
-        (TRIGO_T3_MIN, TRIGO_T3_MAX),
+        (TRIGO_A1_MIN, TRIGO_A1_MAX),
+        (TRIGO_A2_MIN, TRIGO_A2_MAX),
+        (TRIGO_A3_MIN, TRIGO_A3_MAX),
     ]
 
     result = minimize(objective, [theta1_init, theta2_init, theta3_init],
@@ -310,9 +310,9 @@ def inverse_kinematics_prefer_up(xyz_target, current_joints=None, calibration=No
         theta3_init = np.deg2rad(trigo_current[2])
 
     bounds = [
-        (TRIGO_T1_MIN, TRIGO_T1_MAX),
-        (TRIGO_T2_MIN, TRIGO_T2_MAX),
-        (TRIGO_T3_MIN, TRIGO_T3_MAX),
+        (TRIGO_A1_MIN, TRIGO_A1_MAX),
+        (TRIGO_A2_MIN, TRIGO_A2_MAX),
+        (TRIGO_A3_MIN, TRIGO_A3_MAX),
     ]
 
     result = minimize(objective, [theta1_init, theta2_init, theta3_init],
@@ -409,42 +409,38 @@ def compute_cutting_trajectory_jacobian(
     dx_fixed = L3 * sqrt2_inv + L4     # fixed X offset wrist → tip
     dz_fixed = -L3 * sqrt2_inv         # fixed Z offset wrist → tip
 
-    def _tip_constrained(t1, t2):
+    def _tip_constrained(a1, a2):
         """Knife-tip (x, z) from trigo angles (rad) with horizontal constraint."""
-        x_wrist = L1 * np.cos(t1 - d1) + x0 + L2 * np.cos(t1 + t2 + d2)
-        z_wrist = L1 * np.sin(t1 - d1) + z0 + L2 * np.sin(t1 + t2 + d2)
+        x_wrist = L1 * np.cos(a1 - d1) + x0 + L2 * np.cos(a1 + a2 + d2)
+        z_wrist = L1 * np.sin(a1 - d1) + z0 + L2 * np.sin(a1 + a2 + d2)
         return x_wrist + dx_fixed, z_wrist + dz_fixed + Z_FK_BIAS_MM
 
-    def _jacobian(t1, t2):
-        """2×2 Jacobian of (x_tip, z_tip) wrt (t1, t2) under horizontal constraint.
+    def _jacobian(a1, a2):
+        """2×2 Jacobian of (x_tip, z_tip) wrt (a1, a2) under horizontal constraint.
 
-        J = [[ ∂x/∂t1,  ∂x/∂t2 ],
-             [ ∂z/∂t1,  ∂z/∂t2 ]]
+        J = [[ ∂x/∂a1,  ∂x/∂a2 ],
+             [ ∂z/∂a1,  ∂z/∂a2 ]]
 
         The wrist→tip fixed offset contributes zero to the Jacobian, so only
         the L1 and L2 links appear here.
         """
-        s1   = np.sin(t1 - d1)
-        c1   = np.cos(t1 - d1)
-        s12  = np.sin(t1 + t2 + d2)
-        c12  = np.cos(t1 + t2 + d2)
-        J11  = -L1 * s1  - L2 * s12   # ∂x/∂t1
-        J12  = -L2 * s12               # ∂x/∂t2
-        J21  =  L1 * c1  + L2 * c12   # ∂z/∂t1
-        J22  =  L2 * c12               # ∂z/∂t2
+        s1   = np.sin(a1 - d1)
+        c1   = np.cos(a1 - d1)
+        s12  = np.sin(a1 + a2 + d2)
+        c12  = np.cos(a1 + a2 + d2)
+        J11  = -L1 * s1  - L2 * s12   # ∂x/∂a1
+        J12  = -L2 * s12               # ∂x/∂a2
+        J21  =  L1 * c1  + L2 * c12   # ∂z/∂a1
+        J22  =  L2 * c12               # ∂z/∂a2
         return np.array([[J11, J12], [J21, J22]])
 
     # ── Initialise from current joint angles ──────────────────────────────────
     trigo0 = joint_angles_to_trigo(np.array(initial_joint_angles))
-    t1 = np.deg2rad(trigo0[0])
-    t2 = np.deg2rad(trigo0[1])
-    # t3 is derived from constraint — no need to track separately
+    a1 = np.deg2rad(trigo0[0])
+    a2 = np.deg2rad(trigo0[1])
+    # a3 is derived from constraint — no need to track separately
 
     # ── Angle bounds ──────────────────────────────────────────────────────────
-    T1_MIN, T1_MAX = TRIGO_T1_MIN, TRIGO_T1_MAX
-    T2_MIN, T2_MAX = TRIGO_T2_MIN, TRIGO_T2_MAX
-    T3_MIN, T3_MAX = TRIGO_T3_MIN, TRIGO_T3_MAX
-
     waypoints = []
     t_elapsed = 0.0
 
@@ -460,51 +456,51 @@ def compute_cutting_trajectory_jacobian(
             break
 
         # ── Jacobian Newton iterations to reach (x_des, z_des) ───────────────
-        t1_new, t2_new = t1, t2
+        a1_new, a2_new = a1, a2
         converged = False
         for _ in range(10):
-            x_cur, z_cur = _tip_constrained(t1_new, t2_new)
+            x_cur, z_cur = _tip_constrained(a1_new, a2_new)
             err = np.array([x_des - x_cur, z_des - z_cur])
             if np.linalg.norm(err) < 0.01:   # 0.01 mm — converged
                 converged = True
                 break
-            J = _jacobian(t1_new, t2_new)
+            J = _jacobian(a1_new, a2_new)
             det = J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0]
             if abs(det) < 1e-4:
                 print(f"[CUT-JAC] Singular Jacobian (det={det:.2e}) at t={t_elapsed:.2f}s — stopping.")
                 return waypoints
             delta = np.linalg.solve(J, err)
-            t1_new = t1_new + delta[0]
-            t2_new = t2_new + delta[1]
+            a1_new = a1_new + delta[0]
+            a2_new = a2_new + delta[1]
 
         if not converged:
             # Accept the solution anyway if the residual is small enough
-            x_cur, z_cur = _tip_constrained(t1_new, t2_new)
+            x_cur, z_cur = _tip_constrained(a1_new, a2_new)
             if np.linalg.norm([x_des - x_cur, z_des - z_cur]) > 3.0:
                 print(f"[CUT-JAC] Did not converge at t={t_elapsed:.2f}s — stopping.")
                 return waypoints
 
-        # ── Enforce horizontal constraint for t3 ──────────────────────────────
-        t3_new = -np.pi / 4 - t1_new - t2_new
+        # ── Enforce tilt constraint for a3 ────────────────────────────────────
+        a3_new = -np.pi / 4 - a1_new - a2_new
 
         # ── Bounds check ──────────────────────────────────────────────────────
-        if not (T1_MIN <= t1_new <= T1_MAX):
-            print(f"[CUT-JAC] t1={np.degrees(t1_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
+        if not (TRIGO_A1_MIN <= a1_new <= TRIGO_A1_MAX):
+            print(f"[CUT-JAC] a1={np.degrees(a1_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
             break
-        if not (T2_MIN <= t2_new <= T2_MAX):
-            print(f"[CUT-JAC] t2={np.degrees(t2_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
+        if not (TRIGO_A2_MIN <= a2_new <= TRIGO_A2_MAX):
+            print(f"[CUT-JAC] a2={np.degrees(a2_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
             break
-        if not (T3_MIN <= t3_new <= T3_MAX):
-            print(f"[CUT-JAC] t3={np.degrees(t3_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
+        if not (TRIGO_A3_MIN <= a3_new <= TRIGO_A3_MAX):
+            print(f"[CUT-JAC] a3={np.degrees(a3_new):.1f}° out of bounds at t={t_elapsed:.2f}s — stopping.")
             break
 
-        t1, t2 = t1_new, t2_new
+        a1, a2 = a1_new, a2_new
 
         # ── Convert back to robot-frame joint angles ───────────────────────────
-        theta1_deg, theta2_deg, theta3_deg = np.rad2deg([t1, t2, t3_new])
-        joint_angles = trigo_to_joint_angles(np.array([theta1_deg, theta2_deg, theta3_deg]))
+        a1_deg, a2_deg, a3_deg = np.rad2deg([a1, a2, a3_new])
+        joint_angles = trigo_to_joint_angles(np.array([a1_deg, a2_deg, a3_deg]))
 
-        x_achieved, z_achieved = _tip_constrained(t1, t2)
+        x_achieved, z_achieved = _tip_constrained(a1, a2)
         pos_err = np.sqrt((x_achieved - x_des)**2 + (z_achieved - z_des)**2)
 
         waypoints.append({
@@ -529,7 +525,7 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
     Jacobian-inverse step to produce the commanded joint angles.
 
     The knife tilt is held constant at knife_tilt_deg via the constraint:
-        t1 + t2 + t3 + π/4 = β    (β = knife_tilt_deg in radians)
+        a1 + a2 + a3 + π/4 = β    (β = knife_tilt_deg in radians)
     β = 0   → horizontal knife
     β < 0   → tip pointing down  (e.g. −10° for a slight downward tilt)
     β > 0   → tip pointing up
@@ -550,16 +546,16 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
     frame.  This differs from the "sin/cos" notation common in textbooks where
     θ is measured from vertical.
 
-    Jacobian of the constrained 2-DOF system wrt (t1, t2):
-        J = [[ -L1·sin(t1-d1) - L2·sin(t1+t2+d2),  -L2·sin(t1+t2+d2) ],
-             [  L1·cos(t1-d1) + L2·cos(t1+t2+d2),   L2·cos(t1+t2+d2) ]]
-        D = det(J) = L1·L2·sin(t2 + d1 + d2)
+    Jacobian of the constrained 2-DOF system wrt (a1, a2):
+        J = [[ -L1·sin(a1-d1) - L2·sin(a1+a2+d2),  -L2·sin(a1+a2+d2) ],
+             [  L1·cos(a1-d1) + L2·cos(a1+a2+d2),   L2·cos(a1+a2+d2) ]]
+        D = det(J) = L1·L2·sin(a2 + d1 + d2)
 
     Analytical inverse (one shot, no iteration):
-        dt1 = (1/D) · [ L2·cos(t1+t2+d2)·dx  +  L2·sin(t1+t2+d2)·dz ]
-        dt2 = −(1/D) · [ (L1·cos(t1-d1)+L2·cos(t1+t2+d2))·dx
-                        +(L1·sin(t1-d1)+L2·sin(t1+t2+d2))·dz ]
-        dt3 = −dt1 − dt2
+        da1 = (1/D) · [ L2·cos(a1+a2+d2)·dx  +  L2·sin(a1+a2+d2)·dz ]
+        da2 = −(1/D) · [ (L1·cos(a1-d1)+L2·cos(a1+a2+d2))·dx
+                        +(L1·sin(a1-d1)+L2·sin(a1+a2+d2))·dz ]
+        da3 = −da1 − da2
 
     Parameters
     ----------
@@ -584,7 +580,7 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
     d1 = np.deg2rad(upper_arm_elbow_angle)  # 13.81° — upper-arm/elbow joint offset
     d2 = np.deg2rad(elbow_wrist_angle)      #  1.77° — elbow/wrist joint offset
 
-    # Under the tilt constraint (t1+t2+t3+π/4 = β) the wrist→tip chain is a
+    # Under the tilt constraint (a1+a2+a3+π/4 = β) the wrist→tip chain is a
     # fixed vector determined by β = knife_tilt_deg.
     beta = np.deg2rad(knife_tilt_deg)
     dx_fixed = L3 * np.cos(beta - np.pi / 4) + L4 * np.cos(beta)
@@ -592,15 +588,16 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
 
     # ── Convert observed robot-frame angles → trigo-frame radians ─────────────
     trigo = joint_angles_to_trigo(np.array(current_joint_angles))
-    t1 = np.deg2rad(trigo[0])
-    t2 = np.deg2rad(trigo[1])
-    # t3 is not needed; it is recomputed from the constraint after the update.
+    a1 = np.deg2rad(trigo[0])
+    a2 = np.deg2rad(trigo[1])
+    a3 = np.deg2rad(trigo[2])
+    # a3 is not needed; it is recomputed from the constraint after the update.
 
     # ── Current tip position (constrained FK, same formula as forward_kinematics)
-    s1  = np.sin(t1 - d1)
-    c1  = np.cos(t1 - d1)
-    s12 = np.sin(t1 + t2 + d2)
-    c12 = np.cos(t1 + t2 + d2)
+    s1  = np.sin(a1 - d1)
+    c1  = np.cos(a1 - d1)
+    s12 = np.sin(a1 + a2 + d2)
+    c12 = np.cos(a1 + a2 + d2)
 
     x_wrist = L1 * c1 + x0 + L2 * c12
     z_wrist = L1 * s1 + z0 + L2 * s12
@@ -611,35 +608,41 @@ def jacobian_cutting_step(current_joint_angles, x_des_mm, z_des_mm,
     dz = z_des_mm - z_cur
 
     # ── Determinant ───────────────────────────────────────────────────────────
-    # D = L1·L2·sin(t2 + d1 + d2)
+    # D = L1·L2·sin(a2 + d1 + d2)
     # Singular when elbow is nearly fully extended (arm and forearm aligned).
-    D = L1 * L2 * np.sin(t2 + d1 + d2)
+    D = L1 * L2 * np.sin(a2 + d1 + d2)
     if abs(D) < 500.0:   # ~2° from singularity; units: mm²
         print(f"[CUT-JAC] Near-singular configuration (D={D:.1f} mm²) — skipping step.")
         return None
 
     # ── Analytical Jacobian inverse (one shot, no iteration) ──────────────────
-    dt1 = (L2 * c12 * dx + L2 * s12 * dz) / D
-    dt2 = -((L1 * c1 + L2 * c12) * dx + (L1 * s1 + L2 * s12) * dz) / D
+    da1 = (L2 * c12 * dx + L2 * s12 * dz) / D
+    da2 = -((L1 * c1 + L2 * c12) * dx + (L1 * s1 + L2 * s12) * dz) / D
+    # da3 = -(da1 + da2)
+     # enforce constraint for a3 update
 
-    # ── Apply delta and enforce horizontal constraint ─────────────────────────
-    t1_new = t1 + dt1
-    t2_new = t2 + dt2
-    t3_new = beta - np.pi / 4 - t1_new - t2_new   # constraint: t1+t2+t3 = β−π/4
+    # ── Apply delta and enforce tilt constraint ────────────────────────────────
+    a1_new = a1 + da1
+    a2_new = a2 + da2
+
+
+    da3 = beta - np.pi / 4 - a1_new - a2_new - a3  # compute da3 from constraint  
+    a3_new = a3 + da3 / 4
+    # a3_new = beta - np.pi / 4 - a1_new - a2_new   # constraint: a1+a2+a3 = β−π/4
 
     # ── Joint bounds ──────────────────────────────────────────────────────────
-    if not (TRIGO_T1_MIN <= t1_new <= TRIGO_T1_MAX):
-        print(f"[CUT-JAC] t1={np.degrees(t1_new):.1f}° out of bounds.")
+    if not (TRIGO_A1_MIN <= a1_new <= TRIGO_A1_MAX):
+        print(f"[CUT-JAC] a1={np.degrees(a1_new):.1f}° out of bounds.")
         return None
-    if not (TRIGO_T2_MIN <= t2_new <= TRIGO_T2_MAX):
-        print(f"[CUT-JAC] t2={np.degrees(t2_new):.1f}° out of bounds.")
+    if not (TRIGO_A2_MIN <= a2_new <= TRIGO_A2_MAX):
+        print(f"[CUT-JAC] a2={np.degrees(a2_new):.1f}° out of bounds.")
         return None
-    if not (TRIGO_T3_MIN <= t3_new <= TRIGO_T3_MAX):
-        print(f"[CUT-JAC] t3={np.degrees(t3_new):.1f}° out of bounds.")
+    if not (TRIGO_A3_MIN <= a3_new <= TRIGO_A3_MAX):
+        print(f"[CUT-JAC] a3={np.degrees(a3_new):.1f}° out of bounds.")
         return None
 
-    theta1_deg, theta2_deg, theta3_deg = np.rad2deg([t1_new, t2_new, t3_new])
-    return trigo_to_joint_angles(np.array([theta1_deg, theta2_deg, theta3_deg]))
+    a1_deg, a2_deg, a3_deg = np.rad2deg([a1_new, a2_new, a3_new])
+    return trigo_to_joint_angles(np.array([a1_deg, a2_deg, a3_deg]))
 
 
 xyz = forward_kinematics([0, 0, 45.77])
