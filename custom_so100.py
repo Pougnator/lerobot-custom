@@ -12,7 +12,7 @@ MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
 elbow_angle_calib_offset = 8
 wrist_angle_calib_offset = 5.0
 shoulder_lift_calib_offset = 0.5
-shoulder_pan_calib_offset = -1.3
+shoulder_pan_calib_offset = 2.3
 
 class CustomSO100(SOFollower):
     """Custom SO100 with only 4 motors (missing wrist_roll and gripper)."""
