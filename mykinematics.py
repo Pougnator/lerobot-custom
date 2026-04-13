@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 from scipy.optimize import minimize
 
@@ -225,10 +227,14 @@ def calculate_linear_trajectory(target_pos, target_tilt, starting_tilt, starting
 
     trajectory = []
     for step in range(time_steps + 1):
+        k=5.0  # tilt interpolation speed factor (higher = faster approach to target tilt)
         t = step / time_steps
         xw = x_wrist_start + t * (x_wrist_target - x_wrist_start)
         zw = z_wrist_start  + t * (z_wrist_target  - z_wrist_start)
-        tilt_t = starting_tilt + t * (target_tilt - starting_tilt)
+        tilt_t = target_tilt + (target_tilt - starting_tilt) * math.exp(-k*t)
+
+        # tilt_t = starting_tilt + t * (target_tilt - starting_tilt)
+        # tilt_t = starting_tilt + (1 - math.cos(t * math.pi/2)) * (target_tilt - starting_tilt)
         trajectory.append((xw, zw, tilt_t))
 
     invalid = []
@@ -404,6 +410,8 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     dz = target_wrist_z_mm - z_wrist
 
     current_tilt_deg = obs_tilt if obs_tilt is not None else (np.degrees(a1 + a2 + a3) + 45.0)
+    if obs_tilt is None and DEBUG:
+        print(f"[DEBUG][JAC-CTRL] Observed tilt unavailble! Using FK tilt")
     dtilt = np.deg2rad(target_tilt_deg - current_tilt_deg)
 
     if abs(D) < 500.0:
@@ -418,7 +426,7 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
 
     if DEBUG:
         print(f"[DEBUG][JAC-CTRL] da1={np.degrees(da1):.2f}°, da2={np.degrees(da2):.2f}°, da3={np.degrees(da3):.2f}°"
-              f"  new tilt={np.degrees(a1_new + a2_new + a3_new) + 45.0:.2f}°")
+              f"  tilt error={np.degrees(dtilt):.2f}°")
 
     err = _check_trigo_bounds(a1_new, a2_new, a3_new, tag="[JAC-CTRL] ")
     if err:
