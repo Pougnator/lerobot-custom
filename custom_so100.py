@@ -1,6 +1,7 @@
 
 import time
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
+from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.cameras.utils import make_cameras_from_configs
 from mykinematics import forward_kinematics, inverse_kinematics
@@ -9,10 +10,44 @@ import numpy as np
 DEBUG = False 
 MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
 
+class CustomSOLeader(SOLeader):
+    """Custom SO leader with only 4 motors (missing wrist_roll and gripper)."""
+
+    def __init__(self, config: SOLeaderTeleopConfig):
+        # Skip SOLeader.__init__ bus setup — call Teleoperator.__init__ directly
+        super(SOLeader, self).__init__(config)
+        self.config = config
+        norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100
+        from lerobot.motors.feetech import FeetechMotorsBus
+        self.bus = FeetechMotorsBus(
+            port=self.config.port,
+            motors={
+                "shoulder_pan":  Motor(1, "sts3215", norm_mode_body),
+                "shoulder_lift": Motor(2, "sts3215", norm_mode_body),
+                "elbow_flex":    Motor(3, "sts3215", norm_mode_body),
+                "wrist_flex":    Motor(4, "sts3215", norm_mode_body),
+                # wrist_roll (5) and gripper (6) not present on custom build
+            },
+            calibration=self.calibration,
+        )
+
+    def get_motor_torques(self) -> dict:
+        """Return signed load for all leader motors (same encoding as follower).
+
+        Magnitude is bits 0–9 (0–1023); bit 10 is the direction sign.
+        """
+        torques = {}
+        for motor_name in self.bus.motors.keys():
+            raw = self.bus.read("Present_Load", motor_name)
+            magnitude = raw & 0x3FF
+            torques[motor_name] = -magnitude if (raw & 0x400) else magnitude
+        return torques
+
+
 elbow_angle_calib_offset = 8
 wrist_angle_calib_offset = 5.0
 shoulder_lift_calib_offset = 0.5
-shoulder_pan_calib_offset = 2.3
+shoulder_pan_calib_offset = -4.0
 
 class CustomSO100(SOFollower):
     """Custom SO100 with only 4 motors (missing wrist_roll and gripper)."""

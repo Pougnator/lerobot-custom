@@ -3,7 +3,7 @@ import math
 import numpy as np
 from scipy.optimize import minimize
 
-DEBUG =True
+DEBUG = False
 robot_links = {
     "shoulder_upperarm": 79.21,
     "upperarm_forearm": 119,
@@ -36,12 +36,12 @@ Z_FK_BIAS_MM = 2.7   # mm — physical calibration correction, 2026-03-02
 # ─── Joint angle bounds (trigo frame, radians) ────────────────────────────────
 # Used by both the IK optimiser (as scipy bounds) and the Jacobian controller
 # (as explicit guard checks).  Single source of truth — edit here only.
-TRIGO_A1_MIN = -10.0
+TRIGO_A1_MIN = np.deg2rad(-20)
 TRIGO_A1_MAX = np.deg2rad(130)
 TRIGO_A2_MIN = -np.pi
 TRIGO_A2_MAX = 0.0
-TRIGO_A3_MIN = -3 * np.pi / 4
-TRIGO_A3_MAX = np.pi / 4
+TRIGO_A3_MIN = np.deg2rad(-60)
+TRIGO_A3_MAX = np.deg2rad( 90)
 
 # ─── Module-level link constants ─────────────────────────────────────────────
 # Pre-extracted so functions don't repeat the same dict lookups and deg2rad calls.
@@ -148,6 +148,54 @@ def get_tilt_from_joints(joint_angles):
     return float(np.sum(trigo) + 45.0)
 
 
+def estimate_tip_force(joint_angles_deg, torques_dict):
+    """Estimate knife-tip contact force (Fx, Fz) from motor loads.
+
+    Uses the quasi-static relation τ = Jᵀ · F with the wrist-position Jacobian
+    (shoulder + elbow joints only — wrist torque is redundant under the
+    massless-links approximation, since F_wrist = F_tip in static equilibrium).
+
+    Gravity compensation is omitted; the returned values are proportional to
+    contact force but not in physical Newtons.  To convert, multiply by
+    (stall_torque_Nmm / 1000) where stall_torque_Nmm ≈ 16 670 N·mm for STS3215.
+
+    Parameters
+    ----------
+    joint_angles_deg : array-like — [shoulder_lift, elbow_flex, wrist_flex] (°)
+    torques_dict     : dict       — {"shoulder_lift": v, "elbow_flex": v, ...}
+                       Present_Load values from SensorHub.get_latest_torques().
+
+    Returns
+    -------
+    (Fx, Fz) : floats in [Present_Load units / mm], proportional to contact force.
+               Returns (0.0, 0.0) near kinematic singularity (|D| < 500 mm²).
+    """
+    jdeg = np.asarray(joint_angles_deg, dtype=float)
+    a1   = np.radians(90.0 - jdeg[0])      # shoulder_lift → trigo
+    a2   = np.radians(-jdeg[1] - 90.0)     # elbow_flex   → trigo
+
+    _, _, s1, c1, s12, c12, D = _wrist_pos_and_jacobian(a1, a2)
+
+    if abs(D) < 500.0:                      # near singularity — skip
+        return 0.0, 0.0
+
+    J = np.array([
+        [-_L1 * s1 - _L2 * s12,  -_L2 * s12],
+        [ _L1 * c1 + _L2 * c12,   _L2 * c12],
+    ])
+
+    tau = np.array([
+        float(torques_dict.get("shoulder_lift", 0.0)),
+        float(torques_dict.get("elbow_flex",    0.0)),
+    ])
+
+    try:
+        F = np.linalg.solve(J.T, tau)
+        return float(F[0]), float(F[1])
+    except np.linalg.LinAlgError:
+        return 0.0, 0.0
+
+
 def joint_angles_to_trigo(joint_angles):
     """Convert joint angles from robot frame to trigo frame (degrees)."""
     return np.array([
@@ -231,7 +279,7 @@ def calculate_linear_trajectory(target_pos, target_tilt, starting_tilt, starting
         t = step / time_steps
         xw = x_wrist_start + t * (x_wrist_target - x_wrist_start)
         zw = z_wrist_start  + t * (z_wrist_target  - z_wrist_start)
-        tilt_t = target_tilt + (target_tilt - starting_tilt) * math.exp(-k*t)
+        tilt_t = target_tilt - (target_tilt - starting_tilt) * math.exp(-k*t)
 
         # tilt_t = starting_tilt + t * (target_tilt - starting_tilt)
         # tilt_t = starting_tilt + (1 - math.cos(t * math.pi/2)) * (target_tilt - starting_tilt)
@@ -381,7 +429,7 @@ def inverse_kinematics(xyz_target, current_joints=None, calibration=None):
 
 
 def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_z_mm,
-                          target_tilt_deg, obs_tilt=None):
+                          target_tilt_deg, obs_tilt=None, reject_reason=None):
     """Compute a single Jacobian control step toward the target wrist position and tilt.
 
     Controls three independent DOF:
@@ -395,6 +443,8 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     target_wrist_z_mm    : target wrist Z in mm (robot world frame)
     target_tilt_deg      : target knife tilt in degrees (0 = horizontal, positive = tip up)
     obs_tilt             : observed current tilt in degrees (from IMU if available, else None)
+    reject_reason        : optional list — if the step is rejected, the reason string is
+                           appended so the caller can log it.  Does not affect return value.
 
     Returns
     -------
@@ -415,7 +465,10 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     dtilt = np.deg2rad(target_tilt_deg - current_tilt_deg)
 
     if abs(D) < 500.0:
-        print(f"[JAC-CTRL] Near-singular configuration (D={D:.1f} mm²) — skipping step.")
+        msg = f"near-singular (D={D:.1f} mm²)"
+        print(f"[JAC-CTRL] {msg} — skipping step.")
+        if reject_reason is not None:
+            reject_reason.append(msg)
         return None
 
     da1 = (_L2 * c12 * dx + _L2 * s12 * dz) / D
@@ -431,6 +484,33 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     err = _check_trigo_bounds(a1_new, a2_new, a3_new, tag="[JAC-CTRL] ")
     if err:
         print(err)
+        if reject_reason is not None:
+            # Translate to robot-frame joint names and values for readability
+            rf = trigo_to_joint_angles(np.rad2deg([a1_new, a2_new, a3_new]))
+            _trigo_map = [
+                ("a1", a1_new, "shoulder_lift", rf[0]),
+                ("a2", a2_new, "elbow_flex",    rf[1]),
+                ("a3", a3_new, "wrist_flex",    rf[2]),
+            ]
+            bounds_map = {
+                "a1": (TRIGO_A1_MIN, TRIGO_A1_MAX),
+                "a2": (TRIGO_A2_MIN, TRIGO_A2_MAX),
+                "a3": (TRIGO_A3_MIN, TRIGO_A3_MAX),
+            }
+            for tk, tval, rname, rdeg in _trigo_map:
+                lo, hi = bounds_map[tk]
+                if tval < lo:
+                    reject_reason.append(
+                        f"{rname}={rdeg:.1f}° below min "
+                        f"(trigo {np.degrees(tval):.1f}° < {np.degrees(lo):.1f}°)")
+                    break
+                elif tval > hi:
+                    reject_reason.append(
+                        f"{rname}={rdeg:.1f}° above max "
+                        f"(trigo {np.degrees(tval):.1f}° > {np.degrees(hi):.1f}°)")
+                    break
+            else:
+                reject_reason.append(err)   # fallback: raw string if parsing failed
         return None
 
     return trigo_to_joint_angles(np.rad2deg([a1_new, a2_new, a3_new]))
