@@ -207,6 +207,42 @@ def estimate_tip_force(joint_angles_deg, torques_dict):
     return float(F[0]), float(F[1])
 
 
+def gravity_regressor(joint_angles_deg):
+    """Return 3×4 gravity regressor matrix Y such that τ_gravity = Y @ p.
+
+    The quasi-static gravity torque on each joint is a linear function of four
+    lumped parameters p = [q1, q12, q123, q123p] that capture effective mass ×
+    COM distance for each link group.  The same parameters appear consistently
+    across all three joint equations (triangular structure).
+
+    Parameters
+    ----------
+    joint_angles_deg : array-like — [shoulder_lift, elbow_flex, wrist_flex] (°)
+
+    Returns
+    -------
+    Y : ndarray shape (3, 4)
+        Row 0 = SL  [cos(φ1), cos(φ12), cos(φ123), cos(φ123p)]
+        Row 1 = EF  [0,       cos(φ12), cos(φ123), cos(φ123p)]
+        Row 2 = WF  [0,       0,        cos(φ123), cos(φ123p)]
+    """
+    jdeg = np.asarray(joint_angles_deg, dtype=float)
+    t1   = np.radians(90.0  - jdeg[0])
+    t2   = np.radians(-jdeg[1] - 90.0)
+    t3   = np.radians(-jdeg[2])
+
+    c1    = np.cos(t1 - _d1)
+    c12   = np.cos(t1 + t2 + _d2)
+    c123  = np.cos(t1 + t2 + t3)
+    c123p = np.cos(t1 + t2 + t3 + np.pi / 4)
+
+    return np.array([
+        [c1,  c12,  c123,  c123p],
+        [0.0, c12,  c123,  c123p],
+        [0.0, 0.0,  c123,  c123p],
+    ])
+
+
 def joint_angles_to_trigo(joint_angles):
     """Convert joint angles from robot frame to trigo frame (degrees)."""
     return np.array([
