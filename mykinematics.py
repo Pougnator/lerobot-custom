@@ -151,49 +151,60 @@ def get_tilt_from_joints(joint_angles):
 def estimate_tip_force(joint_angles_deg, torques_dict):
     """Estimate knife-tip contact force (Fx, Fz) from motor loads.
 
-    Uses the quasi-static relation τ = Jᵀ · F with the wrist-position Jacobian
-    (shoulder + elbow joints only — wrist torque is redundant under the
-    massless-links approximation, since F_wrist = F_tip in static equilibrium).
+    Uses the quasi-static relation τ = Jᵀ · F with the full 3-DOF tip Jacobian
+    (shoulder + elbow + wrist → knife tip, including L3 and L4 knife assembly).
+    All three joint torques are used; the overdetermined 3×2 system is solved by
+    least squares for noise robustness.
 
-    Gravity compensation is omitted; the returned values are proportional to
-    contact force but not in physical Newtons.  To convert, multiply by
-    (stall_torque_Nmm / 1000) where stall_torque_Nmm ≈ 16 670 N·mm for STS3215.
+    Gravity compensation is omitted; multiply the result by TIP_FORCE_SCALE
+    (= stall_torque_Nmm / 1000 = 2.943 for STS3215 at 30 kg·cm stall) to
+    convert to approximate Newtons.
 
     Parameters
     ----------
     joint_angles_deg : array-like — [shoulder_lift, elbow_flex, wrist_flex] (°)
-    torques_dict     : dict       — {"shoulder_lift": v, "elbow_flex": v, ...}
-                       Present_Load values from SensorHub.get_latest_torques().
+    torques_dict     : dict       — {"shoulder_lift": v, "elbow_flex": v, "wrist_flex": v}
+                       Signed Present_Load values (bits 0–9 magnitude, bit 10 direction).
 
     Returns
     -------
-    (Fx, Fz) : floats in [Present_Load units / mm], proportional to contact force.
+    (Fx, Fz) : floats proportional to knife-tip contact force.
                Returns (0.0, 0.0) near kinematic singularity (|D| < 500 mm²).
     """
     jdeg = np.asarray(joint_angles_deg, dtype=float)
-    a1   = np.radians(90.0 - jdeg[0])      # shoulder_lift → trigo
-    a2   = np.radians(-jdeg[1] - 90.0)     # elbow_flex   → trigo
+    t1 = np.radians(90.0  - jdeg[0])   # shoulder_lift → trigo
+    t2 = np.radians(-jdeg[1] - 90.0)   # elbow_flex    → trigo
+    t3 = np.radians(-jdeg[2])          # wrist_flex    → trigo
 
-    _, _, s1, c1, s12, c12, D = _wrist_pos_and_jacobian(a1, a2)
-
-    if abs(D) < 500.0:                      # near singularity — skip
+    _, _, s1, c1, s12, c12, D = _wrist_pos_and_jacobian(t1, t2)
+    if abs(D) < 500.0:
         return 0.0, 0.0
 
-    J = np.array([
-        [-_L1 * s1 - _L2 * s12,  -_L2 * s12],
-        [ _L1 * c1 + _L2 * c12,   _L2 * c12],
+    t123  = t1 + t2 + t3
+    t123p = t123 + np.pi / 4
+
+    s123  = np.sin(t123);  c123  = np.cos(t123)
+    s123p = np.sin(t123p); c123p = np.cos(t123p)
+
+    # Tip Jacobian ∂(x_tip, z_tip)/∂(t1, t2, t3)  — shape (2, 3)
+    J_tip = np.array([
+        [-_L1*s1   - _L2*s12  - _L3*s123  - _L4*s123p,
+                   - _L2*s12  - _L3*s123  - _L4*s123p,
+                               -_L3*s123  - _L4*s123p],
+        [ _L1*c1   + _L2*c12  + _L3*c123  + _L4*c123p,
+                     _L2*c12  + _L3*c123  + _L4*c123p,
+                                _L3*c123  + _L4*c123p],
     ])
 
     tau = np.array([
         float(torques_dict.get("shoulder_lift", 0.0)),
         float(torques_dict.get("elbow_flex",    0.0)),
+        float(torques_dict.get("wrist_flex",    0.0)),
     ])
 
-    try:
-        F = np.linalg.solve(J.T, tau)
-        return float(F[0]), float(F[1])
-    except np.linalg.LinAlgError:
-        return 0.0, 0.0
+    # Solve 3×2 overdetermined system J_tip^T @ F = tau
+    F, _, _, _ = np.linalg.lstsq(J_tip.T, tau, rcond=None)
+    return float(F[0]), float(F[1])
 
 
 def joint_angles_to_trigo(joint_angles):
