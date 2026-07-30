@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from mykinematics import get_wrist_xz, robot_links
 
-L3 = robot_links["wrist_knife"]       # 97.0 mm  (wrist → knife base)
-L4 = robot_links["knife_knifetip"]    # 80.0 mm  (knife base → tip)
+L3 = robot_links["wrist_knife"]       # 120.0 mm  (wrist → knife base)
+L4 = robot_links["knife_tip"]         #  65.0 mm  (knife base → tip)
 
 
 def make_pos(x, z):
@@ -81,10 +81,10 @@ def test_round_trip_via_fk():
     import mykinematics as mk
     theta1, theta2, theta3 = np.deg2rad(trigo)
     from mykinematics import upper_arm_coordinates, elbow_wrist_angle, upper_arm_elbow_angle
-    x1 = mk.robot_links["upperarm_forearm"] * np.cos(theta1 - np.deg2rad(upper_arm_elbow_angle)) + upper_arm_coordinates[0]
-    z1 = mk.robot_links["upperarm_forearm"] * np.sin(theta1 - np.deg2rad(upper_arm_elbow_angle)) + upper_arm_coordinates[2]
-    x2 = mk.robot_links["forearm_wrist"] * np.cos(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + x1
-    z2 = mk.robot_links["forearm_wrist"] * np.sin(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + z1
+    x1 = mk.robot_links["shoulder_elbow"] * np.cos(theta1 - np.deg2rad(upper_arm_elbow_angle)) + upper_arm_coordinates[0]
+    z1 = mk.robot_links["shoulder_elbow"] * np.sin(theta1 - np.deg2rad(upper_arm_elbow_angle)) + upper_arm_coordinates[2]
+    x2 = mk.robot_links["elbow_wrist"] * np.cos(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + x1
+    z2 = mk.robot_links["elbow_wrist"] * np.sin(theta1 + theta2 + np.deg2rad(elbow_wrist_angle)) + z1
 
     assert abs(wx - x2) < 1e-6, f"wrist_x mismatch: got {wx:.4f}, expected {x2:.4f}"
     assert abs(wz - z2) < 1e-6, f"wrist_z mismatch: got {wz:.4f}, expected {z2:.4f}"

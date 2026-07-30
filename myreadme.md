@@ -60,13 +60,34 @@ This file contains the **CustomSO100 class**, which extends the LeRobot `SOFollo
 
 #### Motor Configuration
 - Supports 4 Feetech STS3215 servo motors
-- Custom calibration offsets for mechanical inaccuracies:
-  - `elbow_angle_calib_offset = 8°`
-  - `wrist_angle_calib_offset = 5°`
-  - `shoulder_lift_calib_offset = 0.5°`
-  - `shoulder_pan_calib_offset = -1.3°`
+- Custom calibration offsets for mechanical inaccuracies, held in the
+  `CALIB_OFFSETS` dict and applied by `_to_raw()` / `_to_true()`:
 
-Not really accurate, but these adjustements were made to keep the arm aligned properly when given zero angles as command. This should be refined in the future and probably integrated to the calibration function
+      offset[j] = raw_encoder_reading[j] − true_physical_angle[j]
+
+      send path     raw  = true + offset
+      observe path  true = raw  − offset
+
+  | Joint | Built-in default |
+  |-------|------------------|
+  | `shoulder_pan`  | −4.0° |
+  | `shoulder_lift` | +0.5° |
+  | `elbow_flex`    | +8.0° |
+  | `wrist_flex`    | +5.0° |
+
+  These defaults are the values that were hardcoded as four module-level constants
+  before 2026-07-30. They are overridden at import by
+  `vibe_cam_project/sensors/angle_calibration.json` when present (path overridable
+  via the `NINJA_ANGLE_CALIB` env var); a missing file falls back to the defaults
+  and says so on stdout.
+
+  **Measure them with** `py -3.9 vibe_cam_project/calibrate_angles.py` — parks the
+  arm at home (pan 0°, shoulder_lift 0°, elbow_flex 0°, wrist_flex 45°) and releases
+  one joint at a time, base → tip, so the arm never collapses and each joint is
+  measured against already-corrected parents.
+
+  Changing these offsets moves the FK chain, so re-run `calibrate_gravity.py` and
+  then `calibrate_robot_frame.py` afterwards.
 
 #### Safety Systems
 
@@ -167,12 +188,20 @@ This file implements **forward and inverse kinematics** for a 4-DOF robotic arm 
 
 ### Robot Configuration
 
-The robot consists of the following link segments (in millimeters):
-- **shoulder_upperarm**: 79.21 mm
-- **upperarm_forearm**: 119 mm  
-- **forearm_wrist**: 134.29 mm
-- **wrist_knife**: 97.0 mm
-- **knife_knifetip**: 80.0 mm
+The robot consists of the following link segments (in millimeters), keyed
+`"<from>_<to>"` along the chain **body → shoulder → elbow → wrist → knife → tip**:
+
+| Key | Length | Symbol | Span |
+|-----|--------|--------|------|
+| **body_shoulder** | 79.21 mm | — | pan motor → shoulder_lift motor (not used by FK/IK) |
+| **shoulder_elbow** | 119 mm | `L1` | shoulder_lift → elbow_flex |
+| **elbow_wrist** | 134.29 mm | `L2` | elbow_flex → wrist_flex |
+| **wrist_knife** | 120.0 mm | `L3` | wrist_flex → knife base |
+| **knife_tip** | 65.0 mm | `L4` | knife base → knife tip (+45° fixed offset) |
+
+> Renamed 2026-07-29 from `shoulder_upperarm` / `upperarm_forearm` / `forearm_wrist` /
+> `knife_knifetip` — the old build-manual labels sat one joint off from the segment they
+> named. Same date: `wrist_knife` 97 → 120 mm and `knife_tip` 80 → 65 mm (force sensor added).
 
 The coordinate system origin is at the **shoulder base** located at `[61, 0, 47]` mm in world coordinates, with the upper arm starting at `[93, 0, 120]` mm.
 

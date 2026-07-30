@@ -1,4 +1,6 @@
 
+import json
+import os
 import time
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
@@ -44,10 +46,94 @@ class CustomSOLeader(SOLeader):
         return torques
 
 
-elbow_angle_calib_offset = 8
-wrist_angle_calib_offset = 5.0
-shoulder_lift_calib_offset = 0.5
-shoulder_pan_calib_offset = -4.0
+# ── Joint angle calibration offsets ──────────────────────────────────────────
+# Definition:  offset[j] = raw_encoder_reading[j] − true_physical_angle[j]
+#   send path     raw  = true + offset   (_to_raw)
+#   observe path  true = raw  − offset   (_to_true)
+#
+# Fitted by vibe_cam_project/calibrate_angles.py, which parks the arm at the home
+# pose (pan 0°, shoulder_lift 0°, elbow_flex 0°, wrist_flex 45°) releasing one
+# joint at a time.
+#
+# Replaced four module-level constants on 2026-07-30. They were applied by eight
+# duplicated if-blocks across four methods, so any new offset — or this loader —
+# would have had to be wired into all eight without missing one.
+ANGLE_CALIB_PATH = os.environ.get(
+    "NINJA_ANGLE_CALIB",
+    r"C:\Repos_Razor\3D-vision\vibe_cam_project\sensors\angle_calibration.json",
+)
+
+# Values that were hardcoded here before the loader existed. Known-good, so they
+# stay as the fallback: a missing calibration file must not brick a working arm.
+_DEFAULT_OFFSETS = {
+    "shoulder_pan":  -4.0,
+    "shoulder_lift":  0.5,
+    "elbow_flex":     8.0,
+    "wrist_flex":     5.0,
+}
+
+CALIB_OFFSETS = dict(_DEFAULT_OFFSETS)
+
+
+def load_angle_calibration(path: str = ANGLE_CALIB_PATH) -> dict:
+    """Load joint offsets from JSON into CALIB_OFFSETS. Returns the active offsets.
+
+    Mutates CALIB_OFFSETS in place rather than rebinding it, so callers that did
+    `from custom_so100 import CALIB_OFFSETS` see reloads.
+
+    A missing or unreadable file falls back to _DEFAULT_OFFSETS — but never
+    silently: the source actually in use is always printed.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        print(f"[CALIB] No angle calibration at {path} — using built-in defaults.")
+        return CALIB_OFFSETS
+    except (OSError, ValueError) as e:
+        print(f"[CALIB][WARN] Cannot read {path} ({e}) — using built-in defaults.")
+        return CALIB_OFFSETS
+
+    loaded  = data.get("offsets", data)
+    unknown = sorted(set(loaded) - set(_DEFAULT_OFFSETS))
+    if unknown:
+        print(f"[CALIB][WARN] Ignoring unknown joints in {path}: {unknown}")
+    missing = sorted(set(_DEFAULT_OFFSETS) - set(loaded))
+    if missing:
+        print(f"[CALIB][WARN] {path} has no entry for {missing} — keeping defaults for those.")
+    for j in _DEFAULT_OFFSETS:
+        if j in loaded:
+            CALIB_OFFSETS[j] = float(loaded[j])
+    print(f"[CALIB] Angle offsets from {path}:  "
+          + "  ".join(f"{j}={CALIB_OFFSETS[j]:+.2f}°" for j in _DEFAULT_OFFSETS))
+    return CALIB_OFFSETS
+
+
+load_angle_calibration()
+
+
+def _to_raw(action: dict) -> dict:
+    """True angles → raw motor commands. Returns a NEW dict; the caller's is untouched.
+
+    Copying matters: act_and_observe() used to mutate the caller's action dict, so
+    re-sending the same dict applied the offset twice.
+    """
+    out = dict(action)
+    for j, off in CALIB_OFFSETS.items():
+        key = f"{j}.pos"
+        if key in out:
+            out[key] += off
+    return out
+
+
+def _to_true(obs: dict) -> dict:
+    """Raw motor readings → true angles. Mutates and returns obs (it is ours already)."""
+    for j, off in CALIB_OFFSETS.items():
+        key = f"{j}.pos"
+        if key in obs:
+            obs[key] -= off
+    return obs
+
 
 class CustomSO100(SOFollower):
     """Custom SO100 with only 4 motors (missing wrist_roll and gripper)."""
@@ -202,16 +288,7 @@ class CustomSO100(SOFollower):
         add any sleep delay.  Used by high-frequency trajectory loops (e.g. cutting
         motion) where the caller manages timing and torque checks directly.
         """
-        a = dict(action)   # don't mutate the caller's dict
-        if "elbow_flex.pos" in a:
-            a["elbow_flex.pos"] += elbow_angle_calib_offset
-        if "wrist_flex.pos" in a:
-            a["wrist_flex.pos"] += wrist_angle_calib_offset
-        if "shoulder_lift.pos" in a:
-            a["shoulder_lift.pos"] += shoulder_lift_calib_offset
-        if "shoulder_pan.pos" in a:
-            a["shoulder_pan.pos"] += shoulder_pan_calib_offset
-        self.send_action(a)
+        self.send_action(_to_raw(action))   # _to_raw copies; caller's dict is safe
 
     def get_observation_calibrated(self) -> dict:
         """Get observation with calibration offsets removed (IK-convention angles).
@@ -219,16 +296,7 @@ class CustomSO100(SOFollower):
         Counterpart of send_action_calibrated — returns angles in the same
         convention as go_to_xz / act_and_observe.
         """
-        obs = self.get_observation()
-        if "elbow_flex.pos" in obs:
-            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
-        if "wrist_flex.pos" in obs:
-            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
-        if "shoulder_lift.pos" in obs:
-            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
-        if "shoulder_pan.pos" in obs:
-            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
-        return obs
+        return _to_true(self.get_observation())
 
     def emergency_stop(self, reason: str = "Torque limit exceeded"):
         """Execute emergency stop - disable all motor torque."""
@@ -304,15 +372,7 @@ class CustomSO100(SOFollower):
     def act_and_observe(self, action: dict) -> dict:
         """Send action and get observation in one step."""
 
-        # Correct the angles because two of them are off
-        if "elbow_flex.pos" in action:
-            action["elbow_flex.pos"] += elbow_angle_calib_offset
-        if "wrist_flex.pos" in action:
-            action["wrist_flex.pos"] += wrist_angle_calib_offset
-        if "shoulder_lift.pos" in action:
-            action["shoulder_lift.pos"] += shoulder_lift_calib_offset  
-        if "shoulder_pan.pos" in action:
-            action["shoulder_pan.pos"] += shoulder_pan_calib_offset
+        action = _to_raw(action)   # true angles → raw motor commands
         # Check if emergency stop was triggered
         if self.external_stop_check and self.external_stop_check() == True:
             print("[WARNING] Emergency stop active - action ignored")
@@ -344,29 +404,12 @@ class CustomSO100(SOFollower):
                 print(f"-{key} ---> {value:.2f} degrees")
             print("-"*50)
 
-        #correct the observed angles because elbow and wrist are off by 4 degrees
-        if "elbow_flex.pos" in obs:
-            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
-        if "wrist_flex.pos" in obs:
-            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
-        if "shoulder_lift.pos" in obs:
-            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
-        if "shoulder_pan.pos" in obs:
-            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
-        return obs
+        return _to_true(obs)   # raw motor readings → true angles
     
     def act_and_observe_precise(self, action: dict) -> dict:
         """Send action and get observation in one step."""
 
-        # Correct the angles because two of them are off
-        if "elbow_flex.pos" in action:
-            action["elbow_flex.pos"] += elbow_angle_calib_offset
-        if "wrist_flex.pos" in action:
-            action["wrist_flex.pos"] += wrist_angle_calib_offset
-        if "shoulder_lift.pos" in action:
-            action["shoulder_lift.pos"] += shoulder_lift_calib_offset  
-        if "shoulder_pan.pos" in action:
-            action["shoulder_pan.pos"] += shoulder_pan_calib_offset
+        action = _to_raw(action)   # true angles → raw motor commands
         # Check if emergency stop was triggered
         if self.external_stop_check and self.external_stop_check() == True:
             print("[WARNING] Emergency stop active - action ignored")
@@ -398,16 +441,7 @@ class CustomSO100(SOFollower):
                 print(f"-{key} ---> {value:.2f} degrees")
             print("-"*50)
 
-        #correct the observed angles because elbow and wrist are off by 4 degrees
-        if "elbow_flex.pos" in obs:
-            obs["elbow_flex.pos"] -= elbow_angle_calib_offset
-        if "wrist_flex.pos" in obs:
-            obs["wrist_flex.pos"] -= wrist_angle_calib_offset
-        if "shoulder_lift.pos" in obs:
-            obs["shoulder_lift.pos"] -= shoulder_lift_calib_offset
-        if "shoulder_pan.pos" in obs:
-            obs["shoulder_pan.pos"] -= shoulder_pan_calib_offset
-        return obs
+        return _to_true(obs)   # raw motor readings → true angles
         
     # def configure(self) -> None:
     #     """Custom configuration for the 4-motor SO100."""

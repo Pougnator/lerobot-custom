@@ -4,12 +4,25 @@ import numpy as np
 from scipy.optimize import minimize
 
 DEBUG = False
+# Link lengths in mm, keyed "<from>_<to>" along the kinematic chain:
+#
+#     body → shoulder → elbow → wrist → knife base → knife tip
+#
+# "body" is the Z-axis rotation motor (shoulder_pan); "shoulder" is the
+# shoulder_lift motor.  Joint names match the SO-101 motor registers used
+# everywhere else in the project (shoulder_lift / elbow_flex / wrist_flex).
+# Renamed 2026-07-29 from the old build-manual vocabulary
+# (shoulder_upperarm / upperarm_forearm / forearm_wrist / knife_knifetip),
+# whose anatomical labels sat one joint off from the segment they named.
 robot_links = {
-    "shoulder_upperarm": 79.21,
-    "upperarm_forearm": 119,
-    "forearm_wrist": 134.29,
-    "wrist_knife": 97.0,
-    "knife_knifetip": 80.0,
+    "body_shoulder": 79.21,    # pan motor → shoulder_lift motor; NOT used by FK/IK
+                               # (the same offset is carried as the [32, 0, 73] vector
+                               #  in upper_arm_coordinates below).  Excludes the
+                               #  separate body → base-plane offset.
+    "shoulder_elbow": 119,     # L1
+    "elbow_wrist": 134.29,     # L2
+    "wrist_knife": 120.0,      # L3 — was 97.0  — knife mount rebuilt 2026-07-29
+    "knife_tip": 65.0,         # L4 — was 80.0  — knife mount rebuilt 2026-07-29
 }
 
 elbow_wrist_angle = 1.77        # degrees
@@ -22,7 +35,7 @@ upper_arm_coordinates = shoulder_coordinates + np.array([32, 0.0, 73.0])
 # UNDERESTIMATES the knife-tip Z coordinate by ~2.7 mm.  Root cause: the link
 # lengths / joint offsets above describe a chain that is slightly shorter in
 # the vertical direction than the real hardware (accumulated modelling error
-# across shoulder, upper-arm, forearm, wrist, and knife links).
+# across the shoulder, elbow, wrist, and knife links).
 #
 # Z_FK_BIAS_MM is added to z4 in BOTH:
 #   • forward_kinematics()  — FK readback now matches physical measurements.
@@ -31,6 +44,11 @@ upper_arm_coordinates = shoulder_coordinates + np.array([32, 0.0, 73.0])
 #
 # RELATIONSHIP WITH config.py → BOARD_ORIGIN_IN_ROBOT[2]:
 #   BOARD_ORIGIN_IN_ROBOT[2] has been reset to 0.0 — the Z error is handled here.
+#
+# ⚠ STALE SINCE 2026-07-29: this 2.7 mm was fitted against the OLD knife chain
+#   (L3=97, L4=80).  L3/L4 have changed to 120/65 mm, so the residual vertical
+#   modelling error is no longer the same.  Re-run calibrate_robot_frame.py and
+#   re-fit this constant before trusting FK Z to sub-cm accuracy.
 Z_FK_BIAS_MM = 2.7   # mm — physical calibration correction, 2026-03-02
 
 # ─── Joint angle bounds (trigo frame, radians) ────────────────────────────────
@@ -45,10 +63,10 @@ TRIGO_A3_MAX = np.deg2rad( 90)
 
 # ─── Module-level link constants ─────────────────────────────────────────────
 # Pre-extracted so functions don't repeat the same dict lookups and deg2rad calls.
-_L1 = robot_links["upperarm_forearm"]    # 119.00 mm
-_L2 = robot_links["forearm_wrist"]       # 134.29 mm
-_L3 = robot_links["wrist_knife"]         #  97.00 mm
-_L4 = robot_links["knife_knifetip"]      #  80.00 mm
+_L1 = robot_links["shoulder_elbow"]      # 119.00 mm
+_L2 = robot_links["elbow_wrist"]         # 134.29 mm
+_L3 = robot_links["wrist_knife"]         # 120.00 mm (was  97.00 mm)
+_L4 = robot_links["knife_tip"]           #  65.00 mm (was  80.00 mm)
 _x0 = upper_arm_coordinates[0]
 _z0 = upper_arm_coordinates[2]
 _d1 = np.deg2rad(upper_arm_elbow_angle)  # 13.81°
@@ -126,7 +144,7 @@ def get_wrist_xz(target_knife_pos, knife_tilt_deg=0.0):
 
     Given a target knife-tip position and tilt, returns the wrist (x, z) in mm.
 
-    knife_tilt_deg: angle of L4 (knife_knifetip link) from horizontal.
+    knife_tilt_deg: angle of L4 (knife_tip link) from horizontal.
       0° = horizontal, negative = tip down, positive = tip up.
     L3 (wrist_knife) is always 45° behind L4: L3 angle = tilt - 45°.
     """
