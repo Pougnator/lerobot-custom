@@ -383,7 +383,8 @@ class CustomSO100(SOFollower):
         self.send_action(action)
         # Monitor torque during movement
         start_time = time.time()
-        while time.time() - start_time < 0.1 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
+        # while time.time() - start_time < 0.1 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
+        while time.time() - start_time < 0.1: 
             torques = self.get_motor_torques()
             velocities = self.get_motors_velocities()
             self.check_torque_limits(torques, threshold=MAX_TORQUE_THRESHOLD)
@@ -395,8 +396,8 @@ class CustomSO100(SOFollower):
                 self.print_motor_torques(torques)
             time.sleep(0.1)  # Sample every 100ms
          
-        
-        time.sleep(3)
+        #This was for debug purposes
+        # time.sleep(3)
         obs = self.get_observation()
         if DEBUG == True:
             print(f"[DEBUG][CustomSO100] received observation:")

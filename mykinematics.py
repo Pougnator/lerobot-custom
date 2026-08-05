@@ -58,8 +58,15 @@ TRIGO_A1_MIN = np.deg2rad(-20)
 TRIGO_A1_MAX = np.deg2rad(130)
 TRIGO_A2_MIN = -np.pi
 TRIGO_A2_MAX = 0.0
-TRIGO_A3_MIN = np.deg2rad(-60)
+TRIGO_A3_MIN = np.deg2rad(-90)
 TRIGO_A3_MAX = np.deg2rad( 90)
+
+# ─── Trajectory no-op thresholds ─────────────────────────────────────────────
+# calculate_linear_trajectory refuses a move only when BOTH of these are met, i.e.
+# the arm is already where it was asked to go. Both are well under the servo's own
+# resolution (0.088°/pulse), so nothing physically achievable is rejected.
+MIN_MOVE_MM  = 0.5    # wrist travel below this is not a move
+MIN_TILT_DEG = 0.5    # tilt change below this is not a rotation
 
 # ─── Module-level link constants ─────────────────────────────────────────────
 # Pre-extracted so functions don't repeat the same dict lookups and deg2rad calls.
@@ -321,22 +328,35 @@ def calculate_linear_trajectory(target_pos, target_tilt, starting_tilt, starting
         list of (x_wrist_mm, z_wrist_mm, tilt_deg) tuples
 
     Raises:
-        ValueError if start and target are too close, or any waypoint is out of reach.
+        ValueError if the move is a true no-op (neither the wrist nor the tilt
+        changes), or any waypoint is out of reach.
     """
     x_wrist_target, z_wrist_target = get_wrist_xz(target_pos, knife_tilt_deg=target_tilt)
     x_wrist_start,  z_wrist_start  = get_wrist_xz(starting_pos, knife_tilt_deg=starting_tilt)
 
-    distance   = np.sqrt((x_wrist_target - x_wrist_start) ** 2
-                         + (z_wrist_target - z_wrist_start) ** 2)
-    print(f"Distnce: {distance:.1f} mm  speed: {speed:.1f} mm/s  steps/s: {steps_per_second}")
-    print(f'time steps: {int(distance / speed * steps_per_second)}')
+    distance    = np.sqrt((x_wrist_target - x_wrist_start) ** 2
+                          + (z_wrist_target - z_wrist_start) ** 2)
+    tilt_change = abs(target_tilt - starting_tilt)
 
-    time_steps = int((distance / speed) * steps_per_second)
-    if time_steps == 0:
+    # A move is a no-op only if BOTH the wrist and the tilt are already there.
+    # Guarding on distance alone also rejected pure-tilt moves, which still need a3
+    # to rotate even when the wrist stays put.
+    if distance < MIN_MOVE_MM and tilt_change < MIN_TILT_DEG:
         raise ValueError(
-            "Start and target are too close to compute a trajectory at the given "
-            "speed and steps_per_second."
+            f"No movement required: wrist would travel {distance:.2f} mm "
+            f"(< {MIN_MOVE_MM} mm) and tilt would change {tilt_change:.2f}° "
+            f"(< {MIN_TILT_DEG}°)."
         )
+
+    # max(1, round(...)) — int() truncated, so any move needing less than
+    # speed/steps_per_second (20 mm at 60 mm/s and 3 steps/s) collapsed to zero
+    # steps and was rejected as "too close". A move needing a fraction of a step
+    # still needs one step.
+    time_steps = max(1, int(round((distance / speed) * steps_per_second)))
+    if DEBUG:
+        print(f"[TRAJ] distance={distance:.1f} mm  tilt_change={tilt_change:.1f}°  "
+              f"speed={speed:.1f} mm/s  steps/s={steps_per_second}  "
+              f"time_steps={time_steps}")
 
     trajectory = []
     for step in range(time_steps + 1):
