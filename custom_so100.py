@@ -9,7 +9,7 @@ from lerobot.cameras.utils import make_cameras_from_configs
 from mykinematics import forward_kinematics, inverse_kinematics
 import numpy as np
 
-DEBUG = False 
+DEBUG = False
 MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
 
 class CustomSOLeader(SOLeader):
@@ -419,9 +419,13 @@ class CustomSO100(SOFollower):
         if DEBUG == True:
             print(f"[DEBUG] sending action: {action} to robot")
         self.send_action(action)
-        # Monitor torque during movement
+        # Wait until the servos report stopped, but never longer than SETTLE_TIMEOUT_S:
+        # total wait = min(settle time, timeout). If the timeout fires the returned
+        # obs is a snapshot of an arm that is STILL MOVING.
+        SETTLE_TIMEOUT_S = 3.0
         start_time = time.time()
-        while time.time() - start_time < 0.1 or not self.velocities_are_zero(velocities):  # Monitor for 3 seconds
+        settled = False
+        while time.time() - start_time < SETTLE_TIMEOUT_S:
             torques = self.get_motor_torques()
             velocities = self.get_motors_velocities()
             self.check_torque_limits(torques, threshold=MAX_TORQUE_THRESHOLD)
@@ -431,10 +435,15 @@ class CustomSO100(SOFollower):
             if DEBUG:
                 self.print_motor_velocities(velocities)
                 self.print_motor_torques(torques)
+            # Only trust "stopped" after the servo has had time to start moving.
+            if time.time() - start_time >= 0.1 and self.velocities_are_zero(velocities):
+                settled = True
+                break
             time.sleep(0.1)  # Sample every 100ms
-         
-        
-        time.sleep(3)
+
+        waited_s = time.time() - start_time
+        print(f"[PRECISE] waited {waited_s:.2f}s  "
+              f"({'settled' if settled else 'TIMEOUT — arm may still be moving'})")
         obs = self.get_observation()
         if DEBUG == True:
             print(f"[DEBUG][CustomSO100] received observation:")

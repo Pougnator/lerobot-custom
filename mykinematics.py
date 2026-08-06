@@ -558,7 +558,7 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
 
     da1 = (_L2 * c12 * dx + _L2 * s12 * dz) / D
     da2 = -((_L1 * c1 + _L2 * c12) * dx + (_L1 * s1 + _L2 * s12) * dz) / D
-    da3 = dtilt - da1 - da2
+    da3 = dtilt - da1 - da2 
 
     a1_new, a2_new, a3_new = a1 + da1, a2 + da2, a3 + da3
 
