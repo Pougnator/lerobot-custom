@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from typing import Callable
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
 from lerobot.motors import Motor, MotorNormMode
@@ -172,7 +173,10 @@ class CustomSO100(SOFollower):
         self.config = config
         
          # Initialize emergency stop
-        self.external_stop_check = lambda: False  # Default: no stop
+        # Annotated Callable so assigning a real callback type-checks — without it
+        # Pylance infers `() -> Literal[False]` from the default lambda and rejects
+        # every genuine e-stop hookup (e.g. MotionController.setup's lambda).
+        self.external_stop_check: Callable[[], bool] = lambda: False  # Default: no stop
         self._emergency_stop_triggered = False
 
         # Clear calibration if forcing recalibration

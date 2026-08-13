@@ -3,7 +3,7 @@ import math
 import numpy as np
 from scipy.optimize import minimize
 
-DEBUG = False
+DEBUG = True
 # Link lengths in mm, keyed "<from>_<to>" along the kinematic chain:
 #
 #     body → shoulder → elbow → wrist → knife base → knife tip
@@ -128,7 +128,12 @@ def _check_trigo_bounds(a1, a2, a3, tag=""):
 # ─── Public functions ─────────────────────────────────────────────────────────
 
 def forward_kinematics(joint_angles):
-    """Compute knife-tip position (mm) from joint angles (degrees, robot frame)."""
+    """Compute knife-tip position (mm) from joint angles (degrees, robot frame).
+    INPUTS: list of joint angles in degrees - [shoulder lift angle, elbow angle, wrist angle] 
+
+    RETURNS: knife-tip position in mm - [x, 0.0, z]
+    
+    """
     trigo = joint_angles_to_trigo(joint_angles)
     t1, t2, t3 = np.deg2rad(trigo)
     _, _, x4, z4 = _fk_chain(t1, t2, t3)
@@ -533,7 +538,7 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
 
     Returns
     -------
-    np.ndarray [shoulder_lift, elbow_flex, wrist_flex] in robot-frame degrees,
+    Array of target joint angles for next step: [shoulder_lift, elbow_flex, wrist_flex] in robot-frame degrees,
     or None if the configuration is singular or a joint bound would be exceeded.
     """
     trigo = joint_angles_to_trigo(np.array(current_joint_angles))
@@ -565,6 +570,8 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     if DEBUG:
         print(f"[DEBUG][JAC-CTRL] da1={np.degrees(da1):.2f}°, da2={np.degrees(da2):.2f}°, da3={np.degrees(da3):.2f}°"
               f"  tilt error={np.degrees(dtilt):.2f}°")
+        print(f"[DEBUG][JAC-CTRL] OBS a1={np.degrees(a1):.2f}°, a2={np.degrees(a2):.2f}°, a3={np.degrees(a3):.2f}°")
+        print(f"[DEBUG][JAC-CTRL] COMMAND a1_new={np.degrees(a1_new):.2f}°, a2_new={np.degrees(a2_new):.2f}°, a3_new={np.degrees(a3_new):.2f}°")
 
     err = _check_trigo_bounds(a1_new, a2_new, a3_new, tag="[JAC-CTRL] ")
     if err:
