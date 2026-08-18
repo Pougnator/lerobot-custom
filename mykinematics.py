@@ -3,7 +3,7 @@ import math
 import numpy as np
 from scipy.optimize import minimize
 
-DEBUG = True
+DEBUG = False
 # Link lengths in mm, keyed "<from>_<to>" along the kinematic chain:
 #
 #     body → shoulder → elbow → wrist → knife base → knife tip
@@ -549,7 +549,8 @@ def jacobian_control_step(current_joint_angles, target_wrist_x_mm, target_wrist_
     dx = target_wrist_x_mm - x_wrist
     dz = target_wrist_z_mm - z_wrist
 
-    current_tilt_deg = obs_tilt if obs_tilt is not None else (np.degrees(a1 + a2 + a3) + 45.0)
+    # current_tilt_deg = obs_tilt if obs_tilt is not None else (np.degrees(a1 + a2 + a3) + 45.0)
+    current_tilt_deg = obs_tilt
     if obs_tilt is None and DEBUG:
         print(f"[DEBUG][JAC-CTRL] Observed tilt unavailble! Using FK tilt")
     dtilt = np.deg2rad(target_tilt_deg - current_tilt_deg)
