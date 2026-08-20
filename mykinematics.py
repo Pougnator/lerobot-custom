@@ -314,6 +314,38 @@ def _check_wrist_waypoint(x_wrist_mm, z_wrist_mm, tilt_deg):
     return _check_trigo_bounds(a1, a2, a3)
 
 
+def inverse_kinematics_wrist(x_wrist_mm, z_wrist_mm, tilt_deg):
+    """Closed-form IK: wrist (x, z) in mm + knife tilt (deg) → robot-frame
+    joint angles [shoulder_lift, elbow_flex, wrist_flex] in degrees.
+
+    Same math as _check_wrist_waypoint (elbow-down branch), but returns the
+    solution instead of only judging it. Returns None if the wrist is out of
+    reach or any joint violates the trigo bounds.
+    """
+    px = x_wrist_mm - _x0
+    pz = z_wrist_mm - _z0
+    r2 = px ** 2 + pz ** 2
+
+    cos_sum = (r2 - _L1 ** 2 - _L2 ** 2) / (2 * _L1 * _L2)
+    if abs(cos_sum) > 1.0:
+        print(f"[IK] wrist unreachable (r={np.sqrt(r2):.1f} mm, cos_sum={cos_sum:.3f})")
+        return None
+
+    sum_angle = -np.arccos(cos_sum)   # elbow-down solution
+    a2 = sum_angle - _d1 - _d2
+    beta = np.arctan2(pz, px)
+    gamma = np.arctan2(_L2 * np.sin(sum_angle), _L1 + _L2 * np.cos(sum_angle))
+    a1 = beta - gamma + _d1
+    a3 = np.deg2rad(tilt_deg - 45.0) - a1 - a2
+
+    reason = _check_trigo_bounds(a1, a2, a3)
+    if reason is not None:
+        print(f"[IK] wrist IK rejected: {reason}")
+        return None
+
+    return trigo_to_joint_angles(np.rad2deg(np.array([a1, a2, a3])))
+
+
 def calculate_linear_trajectory(target_pos, target_tilt, starting_tilt, starting_pos,
                                  speed=3.0, steps_per_second=None):
     """Calculate a linear wrist trajectory from starting_pos to target_pos.
