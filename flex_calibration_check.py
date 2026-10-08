@@ -31,6 +31,7 @@ from __future__ import annotations
 import sys
 import glob
 import os
+from pathlib import Path
 
 import numpy as np
 
@@ -38,8 +39,14 @@ import numpy as np
 # Config — adjust to your machine                                             #
 # --------------------------------------------------------------------------- #
 
-# Where the recorded parquets live (Razer). Override via PATHS in __main__.
-PARQUET_DIR = r"C:\Repos_Razor\3D-vision\cut_datasets"
+# Where the recorded parquets live, in the 3D-vision repo checked out beside this
+# one. Resolved from this file so no machine root is baked in (the pair moved from
+# C:\Repos_Razor to C:\Repos). Override via PATHS in __main__.
+PARQUET_DIR = next(
+    (str(p) for p in sorted(
+        Path(__file__).resolve().parent.parent.glob("*/cut_datasets")) if p.is_dir()),
+    "cut_datasets",
+)
 
 # Directory containing mykinematics.py (for gravity_regressor). This file ships
 # next to it, so the default just adds its own folder.
@@ -50,7 +57,12 @@ MYKINEMATICS_DIR = os.path.dirname(os.path.abspath(__file__))
 #                                        (shoulder+elbow only, wrist gravity = 0)
 #   * 4-param  {"gravity_params":[..]} — sensor_hub.py / gravity_regressor model
 # Set to None to fit the gravity params from the data instead.
-GRAVITY_MODEL_PATH = r"C:\Repos_Razor\3D-vision\outputs\hilserl\gravity_model.json"
+GRAVITY_MODEL_PATH = next(
+    (str(p) for p in sorted(
+        Path(__file__).resolve().parent.parent.glob(
+            "*/outputs/hilserl/gravity_model.json")) if p.is_file()),
+    None,
+)
 
 # Present_Load over-reads torque by this much per deg/s of joint speed (back-EMF).
 # STS3215 @12V: stall 1000 PL-units, no-load 270 deg/s  ->  1000/270.

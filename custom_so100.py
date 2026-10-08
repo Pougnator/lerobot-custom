@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from pathlib import Path
 from typing import Callable
 from lerobot.robots.so_follower import SOFollower, SOFollowerRobotConfig
 from lerobot.teleoperators.so_leader import SOLeader, SOLeaderTeleopConfig
@@ -59,58 +60,106 @@ class CustomSOLeader(SOLeader):
 # Replaced four module-level constants on 2026-07-30. They were applied by eight
 # duplicated if-blocks across four methods, so any new offset — or this loader —
 # would have had to be wired into all eight without missing one.
-ANGLE_CALIB_PATH = os.environ.get(
-    "NINJA_ANGLE_CALIB",
-    r"C:\Repos_Razor\3D-vision\vibe_cam_project\sensors\angle_calibration.json",
-)
+_ANGLE_CALIB_REL = "vibe_cam_project/sensors/angle_calibration.json"
 
-# Values that were hardcoded here before the loader existed. Known-good, so they
-# stay as the fallback: a missing calibration file must not brick a working arm.
-_DEFAULT_OFFSETS = {
+
+def _find_beside(rel):
+    """Locate `rel` inside a repo checked out beside this one, else None.
+
+    lerobot-custom and 3D-vision sit side by side and the pair has already moved
+    once (C:\\Repos_Razor -> C:\\Repos), so no machine root is hardcoded here:
+    walk up from this file and look one level down into each sibling directory.
+    """
+    for parent in Path(__file__).resolve().parents:
+        hits = sorted(parent.glob("*/" + rel))
+        if hits:
+            return str(hits[0])
+    return None
+
+
+ANGLE_CALIB_PATH = os.environ.get("NINJA_ANGLE_CALIB") or _find_beside(_ANGLE_CALIB_REL)
+
+# The four joints a calibration file must cover. These were ALSO the hardcoded
+# fallback offsets until 2026-10-08 (-4.0 / 0.5 / 8.0 / 5.0); they are no longer
+# applied automatically. The real calibration had drifted 5.9° away on wrist_flex
+# and the fallback hid that behind one easily-missed print line.
+_KNOWN_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")
+
+_BOOTSTRAP_OFFSETS = {
     "shoulder_pan":  -4.0,
     "shoulder_lift":  0.5,
     "elbow_flex":     8.0,
     "wrist_flex":     5.0,
 }
 
-CALIB_OFFSETS = dict(_DEFAULT_OFFSETS)
+CALIB_OFFSETS = {}
 
 
-def load_angle_calibration(path: str = ANGLE_CALIB_PATH) -> dict:
+def load_angle_calibration(path=ANGLE_CALIB_PATH, allow_defaults=False) -> dict:
     """Load joint offsets from JSON into CALIB_OFFSETS. Returns the active offsets.
 
     Mutates CALIB_OFFSETS in place rather than rebinding it, so callers that did
     `from custom_so100 import CALIB_OFFSETS` see reloads.
 
-    A missing or unreadable file falls back to _DEFAULT_OFFSETS — but never
-    silently: the source actually in use is always printed.
+    RAISES on a missing, unreadable or incomplete file. There is deliberately no
+    automatic fallback: offset[j] feeds both the send path (_to_raw) and the
+    observe path (_to_true), so a wrong offset silently moves the whole FK chain,
+    the knife tilt and every force estimate derived from it — indistinguishable
+    from a real measurement. Same reasoning as
+    ArduinoSensors.load_normal_force_calibration.
+
+    `allow_defaults=True` seeds _BOOTSTRAP_OFFSETS instead of raising, and says so
+    loudly. It exists for calibrate_angles.py, which has to start somewhere when
+    it is generating the file for the first time; nothing on a motion path should
+    pass it. The NINJA_ALLOW_DEFAULT_CALIB env var does the same for the
+    import-time load below.
     """
+    def _fail(msg):
+        if not allow_defaults:
+            raise RuntimeError(msg)
+        CALIB_OFFSETS.clear()
+        CALIB_OFFSETS.update(_BOOTSTRAP_OFFSETS)
+        print("[CALIB][BOOTSTRAP] " + msg)
+        print("[CALIB][BOOTSTRAP] Seeding built-in offsets:  "
+              + "  ".join(f"{j}={CALIB_OFFSETS[j]:+.2f}°" for j in _KNOWN_JOINTS))
+        return CALIB_OFFSETS
+
+    if not path:
+        return _fail(
+            f"Angle calibration not found: no {_ANGLE_CALIB_REL} in any repo beside "
+            f"{Path(__file__).resolve().parent}. Check out 3D-vision next to "
+            "lerobot-custom, or set NINJA_ANGLE_CALIB to the file."
+        )
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        print(f"[CALIB] No angle calibration at {path} — using built-in defaults.")
-        return CALIB_OFFSETS
+        return _fail(f"Angle calibration missing: {path}. "
+                     "Run vibe_cam_project/tools/calibrate_angles.py, or point "
+                     "NINJA_ANGLE_CALIB at the file.")
     except (OSError, ValueError) as e:
-        print(f"[CALIB][WARN] Cannot read {path} ({e}) — using built-in defaults.")
-        return CALIB_OFFSETS
+        return _fail(f"Angle calibration unreadable: {path} ({e}).")
 
     loaded  = data.get("offsets", data)
-    unknown = sorted(set(loaded) - set(_DEFAULT_OFFSETS))
+    unknown = sorted(set(loaded) - set(_KNOWN_JOINTS))
     if unknown:
         print(f"[CALIB][WARN] Ignoring unknown joints in {path}: {unknown}")
-    missing = sorted(set(_DEFAULT_OFFSETS) - set(loaded))
-    if missing:
-        print(f"[CALIB][WARN] {path} has no entry for {missing} — keeping defaults for those.")
-    for j in _DEFAULT_OFFSETS:
-        if j in loaded:
-            CALIB_OFFSETS[j] = float(loaded[j])
+    absent = sorted(set(_KNOWN_JOINTS) - set(loaded))
+    if absent:
+        # Previously these kept their built-in default — the silent-partial case.
+        return _fail(f"Angle calibration {path} has no entry for {absent}; "
+                     "re-run calibrate_angles.py covering all four joints.")
+
+    CALIB_OFFSETS.clear()
+    for j in _KNOWN_JOINTS:
+        CALIB_OFFSETS[j] = float(loaded[j])
     print(f"[CALIB] Angle offsets from {path}:  "
-          + "  ".join(f"{j}={CALIB_OFFSETS[j]:+.2f}°" for j in _DEFAULT_OFFSETS))
+          + "  ".join(f"{j}={CALIB_OFFSETS[j]:+.2f}°" for j in _KNOWN_JOINTS))
     return CALIB_OFFSETS
 
 
-load_angle_calibration()
+load_angle_calibration(
+    allow_defaults=bool(os.environ.get("NINJA_ALLOW_DEFAULT_CALIB")))
 
 
 def _to_raw(action: dict) -> dict:
