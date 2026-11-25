@@ -14,26 +14,33 @@ import numpy as np
 DEBUG = False
 MAX_TORQUE_THRESHOLD = 1350.0  # Torque/load threshold to trigger emergency stop
 
+# Calibration id of the (single) leader arm. The calibration file is
+# <HF_LEROBOT_CALIBRATION>/teleoperators/so_leader/ninja_leader.json and is
+# shared by the cutting-arm scripts and the manipulator scripts
+# (3D-vision/vibe_cam_project/manipulator/), so both read the same angles.
+LEADER_ID = "ninja_leader"
+
+
 class CustomSOLeader(SOLeader):
-    """Custom SO leader with only 4 motors (missing wrist_roll and gripper)."""
+    """The leader arm, used by the cutting-arm scripts.
+
+    Since 2026-11-25 the leader is rebuilt with 6 motors (same as a stock
+    SO-101 leader: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
+    wrist_roll, gripper), so the motor list now comes from SOLeader itself.
+    The cutting scripts still only use shoulder_lift, elbow_flex and
+    wrist_flex; wrist_roll and the gripper are read and ignored.
+
+    Before 2026-11-25 this class declared only motors 1-4 and had no id, so its
+    calibration file was "None.json". A 4-motor class would now fail LeRobot's
+    calibration check (it compares the set of motors) at every connect.
+    """
 
     def __init__(self, config: SOLeaderTeleopConfig):
-        # Skip SOLeader.__init__ bus setup — call Teleoperator.__init__ directly
-        super(SOLeader, self).__init__(config)
-        self.config = config
-        norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100
-        from lerobot.motors.feetech import FeetechMotorsBus
-        self.bus = FeetechMotorsBus(
-            port=self.config.port,
-            motors={
-                "shoulder_pan":  Motor(1, "sts3215", norm_mode_body),
-                "shoulder_lift": Motor(2, "sts3215", norm_mode_body),
-                "elbow_flex":    Motor(3, "sts3215", norm_mode_body),
-                "wrist_flex":    Motor(4, "sts3215", norm_mode_body),
-                # wrist_roll (5) and gripper (6) not present on custom build
-            },
-            calibration=self.calibration,
-        )
+        # No id given -> use the shared leader id, so the cutting scripts need
+        # no change to load the right calibration file.
+        if config.id is None:
+            config.id = LEADER_ID
+        super().__init__(config)
 
     def get_motor_torques(self) -> dict:
         """Return signed load for all leader motors (same encoding as follower).
